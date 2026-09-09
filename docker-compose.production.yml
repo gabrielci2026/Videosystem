@@ -1,0 +1,41 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: ${APP_ENV_FILE:-.env.production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    ports:
+      - "3000:3000"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+    volumes:
+      - postgres_production:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  livekit:
+    image: livekit/livekit-server:v1.9.0
+    restart: unless-stopped
+    command: --bind 0.0.0.0 --node-ip ${LIVEKIT_NODE_IP:?set LIVEKIT_NODE_IP} --rtc.force_tcp
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}"
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
+volumes:
+  postgres_production:

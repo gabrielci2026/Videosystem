@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  INVITED
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum Role {
+  USER
+  ADMIN
+  GUEST
+}
+
+enum MessageStatus {
+  SENT
+  READ
+  DELETED
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  CANCELLED
+}
+
+model User {
+  id                  String               @id @default(cuid())
+  email               String               @unique
+  displayName         String
+  passwordHash        String
+  status              UserStatus           @default(PENDING)
+  role                Role                 @default(USER)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  emailVerifiedAt     DateTime?
+  sentMessages        Message[]            @relation("SentMessages")
+  receivedMessages    Message[]            @relation("ReceivedMessages")
+  invitations         Invitation[]         @relation("InvitedUsers")
+  acceptedInvitations Invitation[]         @relation("AcceptedInvitations")
+  auditEvents         AuditEvent[]
+  otpRequests         OTPRequest[]
+  meetings            Meeting[]            @relation("MeetingOrganizer")
+  meetingInvites      MeetingInvite[]
+  ownedRooms          CallRoom[]           @relation("RoomOwner")
+  roomMembers         CallRoomMember[]
+  emailVerifications  EmailVerification[]
+  callMessages        CallMessage[]
+  sessions            Session[]
+  passwordResets      PasswordResetToken[]
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model RateLimitEntry {
+  key       String   @id
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+}
+
+model CallMessage {
+  id        String   @id @default(cuid())
+  roomName  String
+  senderId  String
+  body      String   @db.VarChar(2000)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  sender    User     @relation(fields: [senderId], references: [id])
+
+  @@index([roomName, createdAt])
+}
+
+model EmailVerification {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model CallRoom {
+  id        String           @id @default(cuid())
+  roomName  String           @unique
+  ownerId   String
+  createdAt DateTime         @default(now())
+  owner     User             @relation("RoomOwner", fields: [ownerId], references: [id])
+  members   CallRoomMember[]
+}
+
+model CallRoomMember {
+  id        String   @id @default(cuid())
+  roomId    String
+  userId    String
+  invitedAt DateTime @default(now())
+  room      CallRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId])
+}
+
+model Meeting {
+  id          String          @id @default(cuid())
+  roomName    String          @unique
+  title       String
+  scheduledAt DateTime
+  status      MeetingStatus   @default(SCHEDULED)
+  organizerId String
+  createdAt   DateTime        @default(now())
+  organizer   User            @relation("MeetingOrganizer", fields: [organizerId], references: [id])
+  invites     MeetingInvite[]
+
+  @@index([organizerId, scheduledAt])
+}
+
+model MeetingInvite {
+  id        String   @id @default(cuid())
+  meetingId String
+  userId    String
+  sentAt    DateTime @default(now())
+  meeting   Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingId, userId])
+  @@index([userId])
+}
+
+model OTPRequest {
+  id        String    @id @default(cuid())
+  userId    String
+  email     String
+  roomName  String?
+  code      String?
+  codeHash  String?   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([codeHash])
+}
+
+model Invitation {
+  id           String    @id @default(cuid())
+  email        String
+  tokenHash    String    @unique
+  roomName     String?
+  invitedById  String
+  invitedBy    User      @relation("InvitedUsers", fields: [invitedById], references: [id])
+  acceptedById String?
+  acceptedBy   User?     @relation("AcceptedInvitations", fields: [acceptedById], references: [id], onDelete: SetNull)
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([email])
+  @@index([roomName])
+  @@index([acceptedById])
+}
+
+model Message {
+  id          String        @id @default(cuid())
+  senderId    String
+  recipientId String
+  subject     String
+  body        String
+  status      MessageStatus @default(SENT)
+  createdAt   DateTime      @default(now())
+  expiresAt   DateTime
+  sender      User          @relation("SentMessages", fields: [senderId], references: [id])
+  recipient   User          @relation("ReceivedMessages", fields: [recipientId], references: [id])
+
+  @@index([recipientId, createdAt])
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  actor     User?    @relation(fields: [actorId], references: [id])
+
+  @@index([createdAt])
+}

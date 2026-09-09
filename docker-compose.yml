@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: videosystem
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: videosystem
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videosystem -d videosystem"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0 --node-ip 127.0.0.1 --rtc.force_tcp
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      LIVEKIT_KEYS: "devkey: replace-me"
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  postgres_data:
