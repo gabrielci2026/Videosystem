@@ -41,6 +41,7 @@ model User {
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
   emailVerifiedAt     DateTime?
+  passwordChangedAt   DateTime             @default(now())
   sentMessages        Message[]            @relation("SentMessages")
   receivedMessages    Message[]            @relation("ReceivedMessages")
   invitations         Invitation[]         @relation("InvitedUsers")
@@ -166,7 +167,6 @@ model OTPRequest {
   userId    String
   email     String
   roomName  String?
-  code      String?
   codeHash  String?   @unique
   expiresAt DateTime
   usedAt    DateTime?
@@ -174,7 +174,6 @@ model OTPRequest {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
-  @@index([codeHash])
 }
 
 model Invitation {

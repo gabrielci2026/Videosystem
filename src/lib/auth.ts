@@ -4,6 +4,11 @@ import { generateSecureToken, hashString } from "@/lib/security";
 
 const sessionCookie = "session";
 const sessionLifetimeSeconds = 60 * 60 * 24 * 7;
+export const passwordMaxAgeMs = 30 * 24 * 60 * 60 * 1000;
+
+export function isPasswordChangeRequired(passwordChangedAt: Date) {
+  return Date.now() - passwordChangedAt.getTime() >= passwordMaxAgeMs;
+}
 
 export async function createSession(userId: string) {
   const rawToken = generateSecureToken(32);
@@ -20,7 +25,7 @@ export async function clearSession() {
   cookieStore.delete(sessionCookie);
 }
 
-export async function getCurrentUser() {
+export async function getCurrentUser(options: { allowExpiredPassword?: boolean } = {}) {
   const rawToken = (await cookies()).get(sessionCookie)?.value;
   if (!rawToken) return null;
   const session = await prisma.session.findFirst({ where: { tokenHash: hashString(rawToken), revokedAt: null, expiresAt: { gt: new Date() } }, include: { user: true } });
@@ -35,6 +40,10 @@ export async function getCurrentUser() {
     });
     return null;
   }
+
+  // Expired passwords may only reach the password-change endpoint. The
+  // /api/auth/me route opts in so the UI can show the forced-change screen.
+  if (!options.allowExpiredPassword && isPasswordChangeRequired(session.user.passwordChangedAt)) return null;
 
   return session.user;
 }

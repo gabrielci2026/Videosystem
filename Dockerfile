@@ -12,6 +12,7 @@ ENV NODE_ENV=production
 RUN corepack enable
 COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 RUN pnpm install --prod --frozen-lockfile
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/.next ./.next
 EXPOSE 3000
 CMD ["pnpm", "start"]

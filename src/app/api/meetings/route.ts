@@ -9,6 +9,7 @@ import { getAppUrl } from "@/lib/app-url";
 import { guestInvitationExpiry, guestInvitationLink, normalizeGuestEmails } from "@/lib/guest-invitations";
 import { generateSecureToken, hashString } from "@/lib/security";
 import { readJsonBody } from "@/lib/request-body";
+import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 
 const input = z.object({
   title: z.string().trim().min(2).max(120),
@@ -24,7 +25,7 @@ export async function GET() {
     if (!user) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
     if (user.role === "GUEST") return NextResponse.json({ error: "Los invitados no tienen acceso a reuniones" }, { status: 403 });
     const meetings = await prisma.meeting.findMany({
-      where: { status: "SCHEDULED", scheduledAt: { gte: new Date() }, OR: [{ organizerId: user.id }, { invites: { some: { userId: user.id } } }] },
+      where: { status: "SCHEDULED", OR: [{ organizerId: user.id }, { invites: { some: { userId: user.id } } }] },
       include: { organizer: { select: { displayName: true } }, invites: { include: { user: { select: { id: true, displayName: true, email: true } } } } },
       orderBy: { scheduledAt: "asc" },
     });
@@ -42,6 +43,9 @@ export async function POST(request: Request) {
     if (!organizer || organizer.status !== "ACTIVE" || organizer.role === "GUEST") return NextResponse.json({ error: "No autorizado" }, { status: 403 });
 
     const parsed = input.safeParse(await readJsonBody(request));
+    const address = getClientAddress(request);
+    const rate = await checkRateLimit(`meetings:${organizer.id}:${address}`, 20, 60 * 60 * 1000);
+    if (!rate.allowed) return NextResponse.json({ error: `Demasiadas invitaciones. Espera ${rate.retryAfterSeconds} segundos.` }, { status: 429 });
     const scheduledAt = parsed.success ? new Date(parsed.data.scheduledAt) : null;
     if (!parsed.success || !scheduledAt || Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
     return NextResponse.json({ error: "Título, fecha futura e invitados son obligatorios" }, { status: 400 });

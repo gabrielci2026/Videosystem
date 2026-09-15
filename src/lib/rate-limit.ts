@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { hashString } from "@/lib/security";
 
 export async function checkRateLimit(key: string, limit: number, windowMs: number) {
   const resetAt = new Date(Date.now() + windowMs);
@@ -19,6 +20,21 @@ export async function checkRateLimit(key: string, limit: number, windowMs: numbe
 }
 
 export function getClientAddress(request: Request) {
-  if (process.env.TRUST_PROXY !== "true") return "direct";
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown";
+  const requestWithIp = request as Request & { ip?: string };
+  const frameworkIp = requestWithIp.ip?.trim();
+  if (frameworkIp && /^[a-fA-F0-9:.]+$/.test(frameworkIp)) return frameworkIp;
+  // Only trust the proxy-controlled header. Never accept the first X-Forwarded-For value,
+  // which clients can prepend themselves when the proxy does not sanitize the chain.
+  if (process.env.TRUST_PROXY === "true") {
+    const realIp = request.headers.get("x-real-ip")?.trim();
+    if (realIp && /^[a-fA-F0-9:.]+$/.test(realIp)) return realIp;
+    return "trusted-proxy";
+  }
+  const fingerprint = [
+    request.headers.get("user-agent") ?? "",
+    request.headers.get("accept-language") ?? "",
+    request.headers.get("sec-ch-ua") ?? "",
+  ].join("|").slice(0, 256);
+  if (fingerprint !== "||") return "fingerprint:" + hashString(fingerprint);
+  return "direct";
 }

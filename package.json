@@ -15,6 +15,7 @@
     "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
     "test:smoke": "tsx scripts/smoke-test.ts",
     "test:security": "node scripts/security-smoke.mjs",
+    "test:camera": "node scripts/test-camera.mjs",
     "retention": "tsx scripts/retention.ts",
     "validate:production": "node scripts/validate-production.mjs",
     "db:backup": "powershell -ExecutionPolicy Bypass -File scripts/backup-db.ps1"

@@ -16,8 +16,11 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ message: "Si la cuenta existe, recibirás instrucciones por email." });
   const email = parsed.data.email.toLowerCase();
   const address = getClientAddress(request);
-  const rate = await checkRateLimit(`reset:${address}:${email}`, 3, 15 * 60 * 1000);
-  if (!rate.allowed) return NextResponse.json({ message: "Si la cuenta existe, recibirás instrucciones por email." });
+  const [addressRate, emailRate] = await Promise.all([
+    checkRateLimit("reset-address:" + address, 10, 15 * 60 * 1000),
+    checkRateLimit("reset:" + address + ":" + email, 3, 15 * 60 * 1000),
+  ]);
+  if (!addressRate.allowed || !emailRate.allowed) return NextResponse.json({ message: "Si la cuenta existe, recibirás instrucciones por email." });
   const user = await prisma.user.findUnique({ where: { email } });
   if (user && user.status === "ACTIVE") {
     const token = generateSecureToken();

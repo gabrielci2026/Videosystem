@@ -1,9 +1,37 @@
 services:
+  migrate:
+    build:
+      context: .
+      target: build
+    restart: "no"
+    env_file: ${APP_ENV_FILE:-.env.production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["pnpm", "exec", "prisma", "migrate", "deploy"]
+
+  retention:
+    build:
+      context: .
+      target: build
+    restart: unless-stopped
+    env_file: ${APP_ENV_FILE:-.env.production}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    command: ["sh", "-c", "while true; do pnpm retention || exit 1; sleep 60; done"]
+
   app:
     build: .
     restart: unless-stopped
     env_file: ${APP_ENV_FILE:-.env.production}
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       livekit:

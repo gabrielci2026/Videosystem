@@ -1,4 +1,5 @@
 const baseUrl = process.env.APP_URL ?? "http://localhost:3000";
+const smokeOrigin = baseUrl;
 const email = process.env.SMOKE_EMAIL ?? "admin@videosystem.local";
 const password = process.env.SMOKE_PASSWORD ?? "AdminVideo2026!";
 
@@ -12,18 +13,21 @@ async function main() {
 
   const login = await fetch(`${baseUrl}/api/auth/login`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: smokeOrigin },
     body: JSON.stringify({ email, password }),
   });
   const loginData = await login.json();
   assert(login.ok, `Login failed: ${login.status}`);
   assert(typeof loginData.userId === "string", "Login did not return userId");
-  assert(typeof loginData.developmentOtp === "string", "Run smoke test with NODE_ENV=development");
-
+  const smokeOtp = process.env.SMOKE_OTP;
+  if (!smokeOtp) {
+    console.log("Smoke test passed: health and login request; define SMOKE_OTP to verify OTP without exposing it.");
+    return;
+  }
   const verify = await fetch(`${baseUrl}/api/auth/verify-otp`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ userId: loginData.userId, code: loginData.developmentOtp }),
+    headers: { "content-type": "application/json", origin: smokeOrigin },
+    body: JSON.stringify({ userId: loginData.userId, code: smokeOtp }),
   });
   assert(verify.ok, `OTP failed: ${verify.status}`);
 

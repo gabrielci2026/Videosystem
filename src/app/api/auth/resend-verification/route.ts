@@ -16,8 +16,12 @@ export async function POST(request: Request) {
   const parsed = input.safeParse(await readJsonBody(request));
   if (!parsed.success) return NextResponse.json(genericResponse);
   const email = parsed.data.email.toLowerCase();
-  const rate = await checkRateLimit(`verify-resend:${getClientAddress(request)}:${email}`, 3, 15 * 60 * 1000);
-  if (!rate.allowed) return NextResponse.json(genericResponse);
+  const address = getClientAddress(request);
+  const [addressRate, emailRate] = await Promise.all([
+    checkRateLimit("verify-resend-address:" + address, 10, 15 * 60 * 1000),
+    checkRateLimit("verify-resend:" + address + ":" + email, 3, 15 * 60 * 1000),
+  ]);
+  if (!addressRate.allowed || !emailRate.allowed) return NextResponse.json(genericResponse);
 
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || user.emailVerifiedAt || !["PENDING", "INVITED"].includes(user.status)) return NextResponse.json(genericResponse);

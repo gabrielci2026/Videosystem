@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession } from "@/lib/auth";
 import { hashString } from "@/lib/security";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
 
@@ -21,13 +21,22 @@ export async function POST(request: Request) {
   }
   
   const { userId, code } = parsed.data;
-  const rate = await checkRateLimit(`otp:${userId}`, 5, 10 * 60 * 1000);
-  if (!rate.allowed) return NextResponse.json({ error: `Demasiados intentos. Espera ${rate.retryAfterSeconds} segundos.` }, { status: 429 });
+  const address = getClientAddress(request);
+  const [addressRate, userRate] = await Promise.all([
+    checkRateLimit("otp-address:" + address, 20, 10 * 60 * 1000),
+    checkRateLimit("otp:" + userId + ":" + address, 5, 10 * 60 * 1000),
+  ]);
+  if (!addressRate.allowed || !userRate.allowed) {
+    const retryAfterSeconds = Math.max(addressRate.retryAfterSeconds, userRate.retryAfterSeconds);
+    return NextResponse.json({ error: "Demasiados intentos. Espera " + retryAfterSeconds + " segundos." }, { status: 429 });
+  }
   
   // Buscar el OTP
   const normalizedCode = code.toUpperCase();
+  const now = new Date();
   const otpRequest = await prisma.oTPRequest.findFirst({
-    where: { OR: [{ codeHash: hashString(normalizedCode) }, { code: normalizedCode }] },
+    where: { userId, codeHash: hashString(normalizedCode), usedAt: null, expiresAt: { gt: now } },
+    orderBy: { createdAt: "desc" },
   });
   
   if (!otpRequest) {
@@ -61,7 +70,7 @@ export async function POST(request: Request) {
   
   // El primer consumo gana; las solicitudes simultáneas no pueden reutilizarlo.
   const consumed = await prisma.oTPRequest.updateMany({
-    where: { id: otpRequest.id, usedAt: null },
+    where: { id: otpRequest.id, usedAt: null, expiresAt: { gt: now } },
     data: { usedAt: new Date() },
   });
   if (consumed.count !== 1) return NextResponse.json({ error: "Código ya fue utilizado" }, { status: 401 });

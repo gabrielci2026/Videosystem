@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
+import { revokeLiveKitRoom } from "@/lib/livekit-admin";
 
 const input = z.object({ title: z.string().trim().min(2).max(120).optional(), scheduledAt: z.string().datetime().optional() });
 
@@ -30,5 +31,6 @@ export async function DELETE(request: Request, context: Context) {
   const meeting = await prisma.meeting.findUnique({ where: { id } });
   if (!meeting || meeting.organizerId !== user.id) return NextResponse.json({ error: "Solo el organizador puede cancelar la reunión" }, { status: 403 });
   const cancelled = await prisma.meeting.update({ where: { id }, data: { status: "CANCELLED" } });
+  await revokeLiveKitRoom(cancelled.roomName);
   return NextResponse.json(cancelled);
 }

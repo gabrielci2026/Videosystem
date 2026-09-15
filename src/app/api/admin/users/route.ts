@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { isSameOrigin } from "@/lib/request-security";
 import { sendEmailAfterResponse, sendGuestApprovedEmail } from "@/lib/email";
 import { readJsonBody } from "@/lib/request-body";
+import { revokeLiveKitUserAccess } from "@/lib/livekit-admin";
 
 const input = z.object({ userId: z.string().min(1), action: z.enum(["approve", "suspend"]) });
 
@@ -31,10 +32,17 @@ export async function PATCH(request: Request) {
         where: { userId: target.id, revokedAt: null },
         data: { revokedAt: new Date() },
       });
+      await transaction.oTPRequest.updateMany({
+        where: { userId: target.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
     }
     await transaction.auditEvent.create({ data: { actorId: admin.id, action: `user.${parsed.data.action}`, metadata: { userId: updated.id } } });
     return updated;
   });
+  if (parsed.data.action === "suspend") {
+    await revokeLiveKitUserAccess(target.id);
+  }
   if (parsed.data.action === "approve" && target.role === "GUEST") {
     const invitation = await prisma.invitation.findFirst({
       where: { acceptedById: target.id, roomName: { not: null } },

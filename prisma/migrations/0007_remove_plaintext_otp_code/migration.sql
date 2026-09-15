@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS "OTPRequest_codeHash_idx";
+ALTER TABLE "OTPRequest" DROP COLUMN IF EXISTS "code";

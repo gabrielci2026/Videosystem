@@ -1,16 +1,42 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { createLocalAudioTrack, createLocalScreenTracks, createLocalVideoTrack, Room, RoomEvent, Track, type LocalVideoTrack } from "livekit-client";
+import { createLocalAudioTrack, createLocalScreenTracks, createLocalVideoTrack, Room, RoomEvent, Track, type LocalAudioTrack, type LocalVideoTrack } from "livekit-client";
+import { CameraImageUnavailableError, startCameraGuard, type CameraGuard } from "@/lib/camera-guard";
 
-type User = { id: string; email: string; displayName: string; role?: "USER" | "ADMIN" | "GUEST" };
+type User = { id: string; email: string; displayName: string; role?: "USER" | "ADMIN" | "GUEST"; passwordChangeRequired?: boolean };
 type Message = { id: string; subject: string; body: string; createdAt: string; sender: { displayName: string; email: string } };
 type ChatEntry = { from: string; text: string };
 type GuestInvitation = { email: string; roomName: string; organizerName: string; title: string; accepted: boolean };
 
+type CallSession = {
+  controller: AbortController;
+  room: Room | null;
+  video: LocalVideoTrack | null;
+  audio: LocalAudioTrack | null;
+  camera: CameraGuard | null;
+};
+
+function releaseCall(session: CallSession) {
+  session.camera?.stop();
+  session.controller.abort();
+  session.video?.stop();
+  session.audio?.stop();
+  // Also stop screen capture when leaving the view or losing the camera.
+  session.room?.localParticipant.trackPublications.forEach((publication) => publication.track?.stop());
+  void session.room?.disconnect().catch((error) => console.error("No se pudo cerrar la conexión multimedia", error));
+}
+
+function toLocalDateTimeValue(value: string | Date) {
+  const date = value instanceof Date ? value : new Date(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
+}
+
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [view, setView] = useState("inicio");
+  const [profileOpen, setProfileOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [messageRecipientId, setMessageRecipientId] = useState<string>();
   const [inviteToken, setInviteToken] = useState<string>();
@@ -39,6 +65,10 @@ export default function Home() {
     const token = new URLSearchParams(window.location.search).get("invite") ?? undefined;
     setInviteToken(token);
     if (!token) return;
+    const cleanParams = new URLSearchParams(window.location.search);
+    cleanParams.delete("invite");
+    const cleanQuery = cleanParams.toString();
+    window.history.replaceState({}, document.title, window.location.pathname + (cleanQuery ? `?${cleanQuery}` : "") + window.location.hash);
     setInvitationLoading(true);
     fetch(`/api/invitations/resolve?token=${encodeURIComponent(token)}`)
       .then(async (response) => {
@@ -59,11 +89,82 @@ export default function Home() {
   if (invitationLoading) return <main className="auth"><div className="auth-card"><h1>Validando invitación</h1><p className="muted">Espera un momento…</p></div></main>;
   if (invitationError) return <main className="auth"><div className="auth-card"><h1>Invitación no disponible</h1><p className="form-error">{invitationError}</p></div></main>;
   if (!user) return <Auth key={inviteToken ?? invitationRoom ?? "default"} onLogin={setUser} roomName={invitationRoom} inviteToken={inviteToken} invitedEmail={guestInvitation?.email} invitationAccepted={guestInvitation?.accepted} />;
+  if (user.passwordChangeRequired) return <PasswordRequiredScreen user={user} onLogout={logout} onComplete={(updatedUser) => setUser(updatedUser)} />;
   if (user.role === "GUEST" && !invitationRoom) return <main className="auth"><div className="auth-card"><h1>Acceso solo por invitación</h1><p className="muted">Abre el enlace de la llamada que recibiste para ingresar.</p><button className="primary" onClick={logout}>Cerrar sesión</button></div></main>;
   if (user.role === "GUEST") return <main className="guest-call"><Rooms setNotice={setNotice} guestMode lockedRoom={invitationRoom} />{notice && <div className="notice">{notice}</div>}<button className="logout" onClick={logout}>Cerrar sesión</button></main>;
-  return <main className="shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">V</span><span>VideoSystem</span></div><div className="profile"><div className="avatar">{initials(user.displayName)}</div><div><strong>{user.displayName}</strong><small>{user.role === "ADMIN" ? "Administrador" : user.email}</small></div><span className="status-dot" /></div><nav><p className="nav-label">Workspace</p><Nav active={view === "inicio"} onClick={() => setView("inicio")} icon="⌂">Inicio</Nav><Nav active={view === "mensajes"} onClick={() => setView("mensajes")} icon="✉">Mensajes</Nav><Nav active={view === "salas"} onClick={() => setView("salas")} icon="◉">Salas</Nav><Nav active={view === "contactos"} onClick={() => setView("contactos")} icon="＋">Contactos</Nav>{user.role === "ADMIN" && <><p className="nav-label separated">Administración</p><Nav active={view === "aprobaciones"} onClick={() => setView("aprobaciones")} icon="✓">Aprobaciones</Nav><Nav active={view === "auditoria"} onClick={() => setView("auditoria")} icon="▤">Auditoría</Nav></>}</nav><button className="logout" onClick={logout}>Cerrar sesión</button></aside><section className="content"><header className="topbar"><div><span className="eyebrow">VideoSystem / Espacio privado</span><h1>{view === "inicio" ? "Buen día, tu equipo está aquí." : title(view)}</h1></div><div className="top-avatar">{initials(user.displayName)}</div></header>{notice && <div className={`notice ${notice.startsWith("Error:") ? "notice-error" : notice.startsWith("Advertencia:") ? "notice-warning" : "notice-success"}`} role="status">{notice}</div>}{view === "inicio" && <HomeView setView={setView} />}{view === "mensajes" && <MessagesView setNotice={setNotice} selectedRecipientId={messageRecipientId} />}{view === "salas" && <Rooms setNotice={setNotice} />}{view === "contactos" && <ContactsView onMessage={(id) => { setMessageRecipientId(id); setView("mensajes"); }} />}{view === "aprobaciones" && <ApprovalsView setNotice={setNotice} />}{view === "auditoria" && <AuditLog />}</section></main>;
+  return <main className="shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">V</span><span>VideoSystem</span></div><button type="button" className="profile profile-button" onClick={() => setProfileOpen(true)}><div className="avatar">{initials(user.displayName)}</div><div><strong>{user.displayName}</strong><small>{user.role === "ADMIN" ? "Administrador" : user.email}</small></div><span className="status-dot" /></button><nav><p className="nav-label">Workspace</p><Nav active={view === "inicio"} onClick={() => setView("inicio")} icon="⌂">Inicio</Nav><Nav active={view === "mensajes"} onClick={() => setView("mensajes")} icon="✉">Mensajes</Nav><Nav active={view === "salas"} onClick={() => setView("salas")} icon="◉">Salas</Nav><Nav active={view === "contactos"} onClick={() => setView("contactos")} icon="＋">Contactos</Nav>{user.role === "ADMIN" && <><p className="nav-label separated">Administración</p><Nav active={view === "aprobaciones"} onClick={() => setView("aprobaciones")} icon="✓">Aprobaciones</Nav><Nav active={view === "auditoria"} onClick={() => setView("auditoria")} icon="▤">Auditoría</Nav></>}</nav><button className="logout" onClick={logout}>Cerrar sesión</button></aside><section className="content"><header className="topbar"><div><span className="eyebrow">VideoSystem / Espacio privado</span><h1>{view === "inicio" ? "Buen día, tu equipo está aquí." : title(view)}</h1></div></header>{notice && <div className={`notice ${notice.startsWith("Error:") ? "notice-error" : notice.startsWith("Advertencia:") ? "notice-warning" : "notice-success"}`} role="status">{notice}</div>}{view === "inicio" && <HomeView setView={setView} />}{view === "mensajes" && <MessagesView setNotice={setNotice} selectedRecipientId={messageRecipientId} />}{view === "salas" && <Rooms setNotice={setNotice} />}{view === "contactos" && <ContactsView onMessage={(id) => { setMessageRecipientId(id); setView("mensajes"); }} />}{view === "aprobaciones" && <ApprovalsView setNotice={setNotice} />}{view === "auditoria" && <AuditLog />}</section>{profileOpen && <ProfileModal user={user} onClose={() => setProfileOpen(false)} onChanged={(updatedUser) => { setUser(updatedUser); setProfileOpen(false); setNotice("Contraseña actualizada correctamente."); }} />}</main>;
 }
 
+type PasswordChangeFormProps = {
+  onSuccess: (user: User) => void;
+  forced?: boolean;
+};
+
+function PasswordChangeForm({ onSuccess, forced = false }: PasswordChangeFormProps) {
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError("");
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    if (data.newPassword !== data.confirmPassword) {
+      setError("La confirmación no coincide con la nueva contraseña.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: data.currentPassword, newPassword: data.newPassword }),
+      });
+      const result = await readJsonResponse(response, "No se pudo cambiar la contraseña.");
+      if (!response.ok) {
+        setError(result.error ?? "No se pudo cambiar la contraseña.");
+        return;
+      }
+      onSuccess(result as User);
+    } catch {
+      setError("No se pudo conectar con el servidor.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <form className="compose profile-form" onSubmit={submit}>
+    <label htmlFor={forced ? "forced-current-password" : "profile-current-password"}>Contraseña actual</label>
+    <input id={forced ? "forced-current-password" : "profile-current-password"} name="currentPassword" type="password" autoComplete="current-password" required />
+    <label htmlFor={forced ? "forced-new-password" : "profile-new-password"}>Nueva contraseña</label>
+    <input id={forced ? "forced-new-password" : "profile-new-password"} name="newPassword" type="password" autoComplete="new-password" minLength={8} required />
+    <label htmlFor={forced ? "forced-confirm-password" : "profile-confirm-password"}>Confirmar nueva contraseña</label>
+    <input id={forced ? "forced-confirm-password" : "profile-confirm-password"} name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required />
+    <button className="primary" type="submit" disabled={saving}>{saving ? "Guardando..." : "Actualizar contraseña"}</button>
+    {error && <p className="form-error">{error}</p>}
+  </form>;
+}
+
+function ProfileModal({ user, onClose, onChanged }: { user: User; onClose: () => void; onChanged: (user: User) => void }) {
+  return <div className="modal-overlay profile-overlay" role="presentation" onMouseDown={onClose}>
+    <div className="modal-content profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="panel-head"><div><span className="eyebrow">Cuenta</span><h2 id="profile-title">Mi perfil</h2></div><button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar perfil">×</button></div>
+      <div className="profile-summary"><div className="avatar">{initials(user.displayName)}</div><div><strong>{user.displayName}</strong><small>{user.email}</small></div></div>
+      <p className="muted">Por seguridad, la contraseña debe actualizarse cada 30 días.</p>
+      <PasswordChangeForm onSuccess={onChanged} />
+    </div>
+  </div>;
+}
+
+function PasswordRequiredScreen({ user, onLogout, onComplete }: { user: User; onLogout: () => void; onComplete: (user: User) => void }) {
+  return <main className="auth password-required-screen"><div className="auth-card">
+    <div className="brand"><span className="brand-mark">V</span><span>VideoSystem</span></div>
+    <span className="eyebrow">Actualización obligatoria</span>
+    <h1>Cambia tu contraseña</h1>
+    <p className="muted">Tu contraseña tiene más de 30 días. Actualízala para continuar usando VideoSystem.</p>
+    <PasswordChangeForm onSuccess={onComplete} forced />
+    <button type="button" className="link-button" onClick={onLogout}>Cerrar sesión</button>
+  </div></main>;
+}
 function AuditLog() {
   const [events, setEvents] = useState<Array<{ id: string; action: string; createdAt: string; actor?: { displayName: string; email: string } | null }>>([]);
   useEffect(() => { fetch("/api/admin/audit").then((response) => response.ok && response.json()).then((result) => result && setEvents(result)); }, []);
@@ -81,7 +182,13 @@ function Auth({ onLogin, roomName, inviteToken, invitedEmail, invitationAccepted
   const [emailAction, setEmailAction] = useState<"reset" | "verify" | null>(null);
 
   useEffect(() => {
-    setResetToken(new URLSearchParams(window.location.search).get("reset") ?? "");
+    const params = new URLSearchParams(window.location.search);
+    setResetToken(params.get("reset") ?? "");
+    if (params.has("reset")) {
+      params.delete("reset");
+      const query = params.toString();
+      window.history.replaceState({}, document.title, window.location.pathname + (query ? `?${query}` : "") + window.location.hash);
+    }
   }, []);
 
   const validatePassword = (pwd: string): string[] => {
@@ -325,7 +432,6 @@ function Auth({ onLogin, roomName, inviteToken, invitedEmail, invitationAccepted
 
 function HomeView({ setView }: { setView: (view: string) => void }) { return <><div className="quick-grid"><button className="quick coral-bg" onClick={() => setView("salas")}><span>＋</span><strong>Nueva sala</strong><small>Iniciar una videollamada</small></button><button className="quick blue-bg" onClick={() => setView("mensajes")}><span>✎</span><strong>Nuevo mensaje</strong><small>Escribir a un contacto</small></button><button className="quick yellow-bg" onClick={() => setView("salas")}><span>⌁</span><strong>Unirse a sala</strong><small>Usar código de reunión</small></button></div><div className="section-heading"><div><span className="eyebrow">Tu actividad</span><h2>Herramientas de tu equipo</h2></div></div><div className="dashboard-grid"><section className="panel"><div className="panel-head"><h3>Mensajería interna</h3><span className="count">Privada</span></div><p className="muted">Envía mensajes a usuarios activos y conserva el control de tus datos.</p><button className="text-button" onClick={() => setView("mensajes")}>Abrir bandeja de entrada →</button></section><section className="panel"><div className="panel-head"><h3>Videollamadas</h3><span className="live-label"><i /> LiveKit</span></div><p className="muted">Salas 1 a 1 o grupales con audio, cámara y compartir pantalla.</p><button className="text-button" onClick={() => setView("salas")}>Abrir salas →</button></section></div></>; }
 
-function Messages({ setNotice }: { setNotice: (value: string) => void }) { const [messages, setMessages] = useState<Message[]>([]); const [users, setUsers] = useState<User[]>([]); const [open, setOpen] = useState(false); const load = async () => { const [messageResponse, usersResponse] = await Promise.all([fetch("/api/messages"), fetch("/api/users")]); if (messageResponse.ok) setMessages(await messageResponse.json()); if (usersResponse.ok) setUsers(await usersResponse.json()); }; useEffect(() => { load(); }, []); const send = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const result = await fetch("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); if (result.ok) { setOpen(false); setNotice("Mensaje enviado"); load(); } }; return <section className="panel"><div className="panel-head"><h3>Bandeja de entrada</h3><button className="primary small" onClick={() => setOpen(true)}>Nuevo mensaje</button></div>{messages.length ? messages.map((message) => <div className="message" key={message.id}><div className="avatar pink">{initials(message.sender.displayName)}</div><div className="message-copy"><strong>{message.sender.displayName}</strong><p><b>{message.subject}</b> · {message.body}</p></div><time>{new Date(message.createdAt).toLocaleDateString("es-AR")}</time></div>) : <p className="muted">Todavía no tienes mensajes.</p>}{open && <form className="compose" onSubmit={send}><select name="recipientId" required defaultValue=""><option value="" disabled>Elegir contacto</option>{users.map((contact) => <option value={contact.id} key={contact.id}>{contact.displayName}</option>)}</select><input name="subject" placeholder="Asunto" required /><textarea name="body" placeholder="Escribe tu mensaje" required /><button className="primary" type="submit">Enviar</button></form>}</section>; }
 
 function MessagesView({ setNotice, selectedRecipientId }: { setNotice: (value: string) => void; selectedRecipientId?: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -401,102 +507,13 @@ async function readJsonResponse(response: Response, fallback: string) {
   try { return JSON.parse(text); } catch { return { error: fallback }; }
 }
 
-class CameraImageUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CameraImageUnavailableError";
-  }
-}
-
-const waitForCamera = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-
-function frameContainsVisibleImage(video: HTMLVideoElement) {
-  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) return false;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 48;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return false;
-
-  try {
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let luminanceTotal = 0;
-    let luminanceSquares = 0;
-    let luminanceMin = 255;
-    let luminanceMax = 0;
-    let visiblePixels = 0;
-    const pixelCount = pixels.length / 4;
-
-    for (let index = 0; index < pixels.length; index += 4) {
-      const luminance = (pixels[index] * 0.2126) + (pixels[index + 1] * 0.7152) + (pixels[index + 2] * 0.0722);
-      luminanceTotal += luminance;
-      luminanceSquares += luminance * luminance;
-      luminanceMin = Math.min(luminanceMin, luminance);
-      luminanceMax = Math.max(luminanceMax, luminance);
-      if (luminance >= 24) visiblePixels += 1;
-    }
-
-    const average = luminanceTotal / pixelCount;
-    const variance = (luminanceSquares / pixelCount) - (average * average);
-    return average >= 16 && visiblePixels / pixelCount >= 0.08 && luminanceMax - luminanceMin >= 24 && variance >= 20;
-  } catch {
-    return false;
-  }
-}
-
-async function verifyCameraProducesVisibleImage(track: LocalVideoTrack) {
-  const mediaTrack = track.mediaStreamTrack;
-  const settings = mediaTrack?.getSettings();
-  if (!mediaTrack || mediaTrack.readyState !== "live" || !mediaTrack.enabled || !settings.deviceId || !settings.width || !settings.height || !settings.frameRate || settings.frameRate < 1) {
-    throw new CameraImageUnavailableError("La cámara no está activa.");
-  }
-
-  const preview = document.createElement("video");
-  preview.autoplay = true;
-  preview.muted = true;
-  preview.playsInline = true;
-  preview.setAttribute("aria-hidden", "true");
-  preview.style.position = "fixed";
-  preview.style.left = "-10000px";
-  preview.style.width = "160px";
-  preview.style.height = "120px";
-  preview.srcObject = new MediaStream([mediaTrack]);
-  document.body.appendChild(preview);
-
-  try {
-    await preview.play();
-    const deadline = Date.now() + 8000;
-    let visibleFrames = 0;
-
-    while (Date.now() < deadline) {
-      if (mediaTrack.readyState !== "live" || !mediaTrack.enabled) {
-        throw new CameraImageUnavailableError("La cámara dejó de estar activa.");
-      }
-
-      if (!mediaTrack.muted && preview.videoWidth > 0 && preview.videoHeight > 0) {
-        visibleFrames = frameContainsVisibleImage(preview) ? visibleFrames + 1 : 0;
-        if (visibleFrames >= 3) return;
-      }
-
-      await waitForCamera(200);
-    }
-
-    throw new CameraImageUnavailableError("La cámara está permitida, pero no entrega una imagen visible. Revisa la tapa, la iluminación o la cámara seleccionada.");
-  } finally {
-    preview.pause();
-    preview.srcObject = null;
-    preview.remove();
-  }
-}
 
 function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value: string) => void; guestMode?: boolean; lockedRoom?: string }) {
   const [roomName, setRoomName] = useState(lockedRoom ?? "");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
-  const [cameraEnabled, setCameraEnabled] = useState(true);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(true);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
@@ -505,7 +522,6 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
   const [sidePanel, setSidePanel] = useState<"participants" | "chat" | null>("participants");
   const [screenSharing, setScreenSharing] = useState(false);
   const [remoteScreens, setRemoteScreens] = useState<Array<{ id: string; name: string }>>([]);
-  const [creatorIdentity, setCreatorIdentity] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [isCreator, setIsCreator] = useState(false);
@@ -513,6 +529,7 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
   const [users, setUsers] = useState<User[]>([]);
   const [meetings, setMeetings] = useState<Array<{ id: string; title: string; roomName: string; scheduledAt: string; status?: "SCHEDULED" | "CANCELLED" }>>([]);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [guestAccess, setGuestAccess] = useState<Array<{ id: string; email: string; displayName: string; expiresAt: string }>>([]);
   const [lastGuestInviteLink, setLastGuestInviteLink] = useState("");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [editingMeeting, setEditingMeeting] = useState<{ id: string; title: string; scheduledAt: string } | null>(null);
@@ -522,12 +539,35 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
     { from: "Tú", text: "Prueba de audio y video en curso." }
   ]);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const meetingStageRef = useRef<HTMLDivElement | null>(null);
   const localScreenRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const remoteScreenRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const remoteAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
+  const callSessionRef = useRef<CallSession | null>(null);
+
+  const closeCall = (session: CallSession, notice: string) => {
+    if (callSessionRef.current !== session) return;
+    callSessionRef.current = null;
+    releaseCall(session);
+    setConnected(false);
+    setConnecting(false);
+    setRoom(null);
+    setParticipants([]);
+    setRemoteScreens([]);
+    setScreenTrack(null);
+    setScreenSharing(false);
+    setIsCreator(false);
+    setNotice(notice);
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+  };
+
+  useEffect(() => () => {
+    const session = callSessionRef.current;
+    callSessionRef.current = null;
+    if (session) releaseCall(session);
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const roomFromLink = new URLSearchParams(window.location.search).get("room");
@@ -561,41 +601,13 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
   }, [showTermsModal]);
 
   useEffect(() => {
-    if (!connected || !room) return;
+    if (!scheduleOpen) return;
+    const dateInput = document.querySelector<HTMLInputElement>("#meeting-date");
+    if (!dateInput) return;
+    dateInput.min = toLocalDateTimeValue(new Date(Date.now() + 60000));
+    if (editingMeeting) dateInput.value = toLocalDateTimeValue(editingMeeting.scheduledAt);
+  }, [scheduleOpen, editingMeeting]);
 
-    let failedChecks = 0;
-    let closingForCamera = false;
-    const checkCamera = () => {
-      if (closingForCamera) return;
-      const publication = Array.from(room.localParticipant.videoTrackPublications.values())
-        .find((candidate) => candidate.track?.source === Track.Source.Camera);
-      const cameraTrack = publication?.track as LocalVideoTrack | undefined;
-      const mediaTrack = cameraTrack?.mediaStreamTrack;
-      const preview = localVideoRef.current;
-      const cameraIsVisible = Boolean(
-        mediaTrack &&
-        mediaTrack.readyState === "live" &&
-        mediaTrack.enabled &&
-        !mediaTrack.muted &&
-        preview &&
-        frameContainsVisibleImage(preview)
-      );
-
-      failedChecks = cameraIsVisible ? 0 : failedChecks + 1;
-      if (failedChecks < 3) return;
-
-      closingForCamera = true;
-      window.clearInterval(intervalId);
-      void room.disconnect().finally(() => {
-        setNotice("La llamada se cerró porque la cámara dejó de mostrar una imagen visible. Revisa la cámara antes de volver a entrar.");
-      });
-    };
-
-    const intervalId = window.setInterval(checkCamera, 3000);
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [connected, room, setNotice]);
 
   useEffect(() => {
     if (!connected || guestMode) return;
@@ -615,17 +627,11 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
 
   const attachLocalPreview = (nextRoom: Room) => {
     const localVideo = Array.from(nextRoom.localParticipant.videoTrackPublications.values()).find((publication) => publication.source === Track.Source.Camera && publication.track);
-    const localAudio = Array.from(nextRoom.localParticipant.audioTrackPublications.values()).find((publication) => publication.track);
-
     if (localVideo?.track && localVideoRef.current) {
       localVideo.track.detach();
       localVideo.track.attach(localVideoRef.current);
     }
 
-    if (localAudio?.track && localAudioRef.current) {
-      localAudio.track.detach();
-      localAudio.track.attach(localAudioRef.current);
-    }
   };
 
   const attachParticipantMedia = (participant: any) => {
@@ -670,7 +676,7 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
   };
 
   const connect = async () => {
-    if (connecting) return;
+    if (callSessionRef.current) return;
     if (!roomName.trim()) {
       setNotice("Error: escribe un nombre de sala antes de conectar.");
       return;
@@ -680,37 +686,60 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
   };
 
   const confirmAndConnect = async () => {
-    if (connecting) return;
+    if (callSessionRef.current) return;
+    const session: CallSession = {
+      controller: new AbortController(), room: null, video: null, audio: null, camera: null,
+    };
+    callSessionRef.current = session;
     setShowTermsModal(false);
     setConnecting(true);
     let videoTrack: LocalVideoTrack | null = null;
-    let audioTrack: any = null;
+    let audioTrack: LocalAudioTrack | null = null;
     let nextRoom: Room | null = null;
     let joined = false;
     try {
-      // No alcanza con el permiso: la cámara debe entregar fotogramas visibles.
-      const availableCameras = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput");
-      if (availableCameras.length === 0 || (selectedCamera && !availableCameras.some((device) => device.deviceId === selectedCamera))) {
-        throw new CameraImageUnavailableError("No se detectó una cámara conectada. Conecta una cámara física antes de iniciar la llamada.");
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new CameraImageUnavailableError("No se puede acceder a la cámara. Abre la aplicación con HTTPS y usa un navegador compatible.");
       }
-      videoTrack = await createLocalVideoTrack({ facingMode: "user", ...(selectedCamera ? { deviceId: selectedCamera } : {}) });
-      await verifyCameraProducesVisibleImage(videoTrack);
+      // Do not rely on device metadata: browsers can omit it before permissions.
+      videoTrack = await createLocalVideoTrack({ facingMode: "user", ...(selectedCamera ? { deviceId: { exact: selectedCamera } } : {}) });
+      session.video = videoTrack;
+      session.controller.signal.throwIfAborted();
+      session.camera = startCameraGuard(() => session.video?.mediaStreamTrack, {
+        signal: session.controller.signal,
+        onFailure: (error) => closeCall(session, "Error: " + error.message + " Para participar debes mantener la cámara activa."),
+      });
+      await session.camera.waitForImage();
       audioTrack = await createLocalAudioTrack(selectedMicrophone ? { deviceId: selectedMicrophone } : undefined);
+      session.audio = audioTrack;
+      session.controller.signal.throwIfAborted();
+      // Permissions for the microphone may take time; require fresh images again.
+      await session.camera.waitForImage();
 
       const response = await fetch("/api/rooms/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        signal: session.controller.signal,
         body: JSON.stringify({ roomName })
       });
       const result = await response.json();
-      if (!response.ok) return setNotice(result.error ?? "No se pudo obtener el acceso a la sala.");
-      if (!result.url || !result.token) return setNotice("LiveKit no devolvió credenciales válidas. Revisa su configuración.");
+      if (!response.ok) {
+        closeCall(session, result.error ?? "No se pudo obtener el acceso a la sala.");
+        return;
+      }
+      if (!result.url || !result.token) {
+        closeCall(session, "No se pudo obtener el acceso a la videollamada.");
+        return;
+      }
+      await session.camera.waitForImage();
 
       const connectedRoom = new Room({ adaptiveStream: true, dynacast: true });
       nextRoom = connectedRoom;
+      session.room = connectedRoom;
 
       nextRoom.on(RoomEvent.ParticipantConnected, (participant) => {
+        if (callSessionRef.current !== session) return;
         setParticipants((current) => {
           const exists = current.some((item) => item.id === participant.identity);
           if (exists) return current;
@@ -721,11 +750,13 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       });
 
       nextRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
+        if (callSessionRef.current !== session) return;
         setParticipants((current) => current.filter((item) => item.id !== participant.identity));
         setRemoteScreens((current) => current.filter((item) => item.id !== participant.identity));
       });
 
       nextRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+        if (callSessionRef.current !== session) return;
         if (publication.source === Track.Source.ScreenShare) {
           setRemoteScreens((current) => current.some((item) => item.id === participant.identity) ? current : [...current, { id: participant.identity, name: participant.name || "Participante" }]);
           attachRemoteScreen(participant);
@@ -735,6 +766,7 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       });
 
       nextRoom.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+        if (callSessionRef.current !== session) return;
         if (publication.source === Track.Source.ScreenShare) {
           track.detach();
           setRemoteScreens((current) => current.filter((item) => item.id !== participant.identity));
@@ -742,32 +774,42 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       });
 
       nextRoom.on(RoomEvent.DataReceived, (payload, participant) => {
+        if (callSessionRef.current !== session) return;
         try {
-          const entry = JSON.parse(new TextDecoder().decode(payload)) as ChatEntry & { type?: string; targetId?: string; muted?: boolean };
-          if (entry.type === "mute" && participant?.identity === result.creatorId && entry.targetId === connectedRoom.localParticipant.identity) {
-            void connectedRoom.localParticipant.setMicrophoneEnabled(!entry.muted);
-            setMicrophoneEnabled(!entry.muted);
-            setParticipants((current) => current.map((person) => person.id === entry.targetId ? { ...person, status: entry.muted ? "muted" : "online" } : person));
-          } else if (!guestMode && entry.from && entry.text) setChatLog((current) => [...current, entry]);
+          const entry = JSON.parse(new TextDecoder().decode(payload)) as { text?: string };
+          const text = entry.text;
+          if (!guestMode && participant && typeof text === "string") setChatLog((current) => [...current, { from: participant.name || participant.identity, text }]);
         } catch {
-          setNotice("Se recibió un mensaje de sala no válido.");
+          setNotice("Mensaje de sala no valido.");
         }
       });
+      nextRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
+        if (callSessionRef.current !== session) return;
+        if (participant === connectedRoom.localParticipant && publication.source === Track.Source.Camera) {
+          closeCall(session, "Error: la cámara se apagó. Debes mantenerla encendida para participar.");
+        }
+        if (publication.source === Track.Source.Microphone) setParticipants((current) => current.map((person) => person.id === participant.identity ? { ...person, status: "muted" } : person));
+      });
+      nextRoom.on(RoomEvent.TrackUnmuted, (publication, participant) => {
+        if (callSessionRef.current !== session) return;
+        if (publication.source === Track.Source.Microphone) setParticipants((current) => current.map((person) => person.id === participant.identity ? { ...person, status: "online" } : person));
+      });
 
-      nextRoom.on(RoomEvent.LocalTrackPublished, () => attachLocalPreview(connectedRoom));
+      nextRoom.on(RoomEvent.LocalTrackPublished, () => {
+        if (callSessionRef.current === session) attachLocalPreview(connectedRoom);
+      });
+      nextRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+        if (publication.source === Track.Source.Camera) {
+          closeCall(session, "Error: se interrumpió el video de tu cámara. Revisa el dispositivo antes de volver a entrar.");
+        }
+      });
       nextRoom.on(RoomEvent.Disconnected, () => {
-        setConnected(false);
-        setRoom(null);
-        setParticipants([]);
-        setCreatorIdentity(null);
-        setRemoteScreens([]);
-        setScreenTrack(null);
-        setScreenSharing(false);
-        setNotice("Has salido de la sala.");
-        if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+        closeCall(session, "Has salido de la sala.");
       });
 
       await nextRoom.connect(result.url, result.token);
+      session.controller.signal.throwIfAborted();
+      await session.camera.waitForImage();
 
       for (const participant of nextRoom.remoteParticipants.values()) {
         setParticipants((current) => current.some((item) => item.id === participant.identity) ? current : [...current, { id: participant.identity, name: participant.name || "Participante", status: "online" }]);
@@ -776,7 +818,10 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       }
 
       await nextRoom.localParticipant.publishTrack(videoTrack);
+      session.controller.signal.throwIfAborted();
       await nextRoom.localParticipant.publishTrack(audioTrack);
+      session.controller.signal.throwIfAborted();
+      await session.camera.waitForImage();
 
       setRoom(nextRoom);
       setConnected(true);
@@ -785,10 +830,8 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
         void document.documentElement.requestFullscreen().catch(() => undefined);
       }
-      setCameraEnabled(true);
       setMicrophoneEnabled(true);
       setIsCreator(Boolean(result.isCreator));
-      setCreatorIdentity(result.creatorId ?? null);
       setParticipants([
         { id: nextRoom.localParticipant.identity, name: nextRoom.localParticipant.name || "Tú", status: "online" },
         ...Array.from(nextRoom.remoteParticipants.values()).map((participant) => ({ id: participant.identity, name: participant.name || "Participante", status: "online" as const })),
@@ -797,49 +840,37 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       setNotice(`Conectado a ${roomName}`);
 
     } catch (error: any) {
+      // A camera failure/unmount already closed this attempt; preserve its reason.
+      if (callSessionRef.current !== session) return;
       setConnected(false);
       if (error.name === "CameraImageUnavailableError") {
         setNotice(error.message);
       } else if (error.name === "NotAllowedError") {
         setNotice("Debes permitir acceso a cámara y micrófono para conectarte a la reunión.");
-      } else if (error.name === "NotFoundError") {
+      } else if (error.name === "NotFoundError" || error.name === "OverconstrainedError") {
         setNotice("No se encontró una cámara o micrófono disponible.");
       } else if (error.name === "NotReadableError") {
         setNotice("La cámara o el micrófono están siendo usados por otra aplicación.");
       } else if (error.name === "TypeError" || error.message?.includes("WebSocket")) {
-        setNotice("No se pudo conectar con LiveKit en ws://localhost:7880. Comprueba que el servicio esté iniciado.");
+        setNotice("No se pudo conectar con LiveKit. Comprueba la configuración del servidor y que el servicio esté iniciado.");
       } else {
         setNotice(`No se pudo establecer la conexión multimedia: ${error.message || "error desconocido"}`);
       }
     } finally {
       if (!joined) {
-        videoTrack?.stop();
-        audioTrack?.stop();
-        void nextRoom?.disconnect();
+        if (callSessionRef.current === session) callSessionRef.current = null;
+        // Acquisition/connect may finish after cancellation; release late resources too.
+        releaseCall(session);
       }
-      setConnecting(false);
+      if (!callSessionRef.current || callSessionRef.current === session) setConnecting(false);
     }
   };
 
   const disconnect = () => {
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-    if (localAudioRef.current) {
-      localAudioRef.current.srcObject = null;
-    }
-    room?.disconnect();
-    setConnected(false);
-    setRoom(null);
-    setCreatorIdentity(null);
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
-    setNotice("La reunión fue cerrada.");
+    const session = callSessionRef.current;
+    if (session) closeCall(session, "Has salido de la sala.");
   };
 
-  const toggleCamera = async () => {
-    // La cámara no se puede desactivar en las llamadas
-    setNotice("⛔ El uso de cámara es obligatorio durante la videollamada. No puedes desactivarla.");
-  };
 
   const toggleFullscreen = async () => {
     if (!meetingStageRef.current) return;
@@ -848,18 +879,44 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
   };
 
   const toggleMicrophone = async () => {
-    if (!room) return;
+    if (!room || !isCreator || actionLoading) {
+      if (!isCreator) setNotice("El microfono solo puede silenciarlo el creador de la llamada.");
+      return;
+    }
     const nextState = !microphoneEnabled;
-    await room.localParticipant.setMicrophoneEnabled(nextState);
+    setActionLoading("microphone");
+    void room.localParticipant.setMicrophoneEnabled(nextState).then(() => {
     setMicrophoneEnabled(nextState);
+    setActionLoading(null);
     setNotice(nextState ? "Micrófono activado." : "Micrófono silenciado.");
+    }).catch(() => {
+      setActionLoading(null);
+      setNotice("No se pudo cambiar el estado del microfono.");
+    });
   };
 
   const toggleParticipantMute = async (participantId: string, muted: boolean) => {
-    if (!room || !isCreator || participantId === room.localParticipant.identity) return;
-    await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ type: "mute", targetId: participantId, muted })), { reliable: true });
-    setParticipants((current) => current.map((person) => person.id === participantId ? { ...person, status: muted ? "muted" : "online" } : person));
-    setNotice(muted ? "Participante silenciado." : "Micrófono del participante habilitado.");
+    if (!room || !isCreator || participantId === room.localParticipant.identity || actionLoading) return;
+    setActionLoading("mute:" + participantId);
+    try {
+      const response = await fetch("/api/rooms/moderation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ roomName, userId: participantId, muted }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setNotice(data.error ?? "No se pudo moderar el microfono.");
+        return;
+      }
+      setParticipants((current) => current.map((person) => person.id === participantId ? { ...person, status: muted ? "muted" : "online" } : person));
+      setNotice(muted ? "Participante silenciado." : "Microfono del participante habilitado.");
+    } catch {
+      setNotice("No se pudo contactar con el servidor de moderacion.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const toggleScreenShare = async () => {
@@ -889,22 +946,64 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
     }
   };
 
+  const loadGuestAccess = async () => {
+    if (!roomName.trim()) return;
+    const response = await fetch("/api/rooms/guests?roomName=" + encodeURIComponent(roomName));
+    if (response.ok) setGuestAccess(await response.json());
+  };
+
   const inviteGuests = async () => {
     setInviteOpen(true);
+    await loadGuestAccess();
+  };
+
+  const revokeGuest = async (userId: string) => {
+    if (actionLoading) return;
+    setActionLoading("revoke:" + userId);
+    try {
+    const response = await fetch("/api/rooms/guests", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ roomName, userId }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setNotice(result.error ?? "No se pudo revocar el acceso del invitado.");
+      return;
+    }
+    setNotice("Acceso del invitado revocado.");
+    await loadGuestAccess();
+    } catch {
+      setNotice("No se pudo revocar el acceso del invitado.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const sendRoomInvites = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (actionLoading) return;
+    setActionLoading("room-invite");
+    try {
     const formData = new FormData(event.currentTarget);
     const result = await fetch("/api/rooms/invite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomName, userIds: formData.getAll("userIds") }) });
     const data = await readJsonResponse(result, "No se pudieron enviar las invitaciones.");
     if (!result.ok) return setNotice(data.error ?? "No se pudieron enviar las invitaciones.");
     setInviteOpen(false);
     setNotice(`Invitación enviada a ${data.sentCount} usuario(s).`);
+    } catch {
+      setNotice("No se pudieron enviar las invitaciones.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const sendGuestInvite = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (actionLoading) return;
+    setActionLoading("guest-invite");
+    try {
     const form = event.currentTarget;
     const formData = new FormData(form);
     const response = await fetch("/api/rooms/invite-guest", {
@@ -917,10 +1016,19 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
     setLastGuestInviteLink(data.link);
     setNotice(data.emailQueued ? "Invitación creada; el email quedó en cola de envío." : "La invitación fue creada. Copia el enlace manualmente si es necesario.");
     form.reset();
+    await loadGuestAccess();
+    } catch {
+      setNotice("No se pudo crear la invitacion externa.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const scheduleMeeting = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (actionLoading) return;
+    setActionLoading("schedule");
+    try {
     const formData = new FormData(event.currentTarget);
     const guestEmails = String(formData.get("guestEmails") ?? "").split(/[\n,;]+/).map((email) => email.trim()).filter(Boolean);
     const title = String(formData.get("title") ?? "");
@@ -932,29 +1040,50 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
     setEditingMeeting(null);
     setMeetings((current) => editingMeeting ? current.map((meeting) => meeting.id === editingMeeting.id ? { ...meeting, ...data } : meeting) : [...current, data].sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)));
     setNotice(editingMeeting ? "Reunión actualizada correctamente." : data.emailQueued ? `Reunión programada. Los enlaces quedaron en cola para ${data.invitedCount} usuario(s).` : "Reunión programada. Copia el enlace si algún email no llega.");
+    } catch {
+      setNotice("No se pudo guardar la reunion.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const cancelMeeting = async (meetingId: string) => {
+    if (actionLoading) return;
+    setActionLoading("cancel:" + meetingId);
+    try {
     const response = await fetch(`/api/meetings/${meetingId}`, { method: "DELETE" });
     const data = await readJsonResponse(response, "No se pudo cancelar la reunión.");
     if (!response.ok) return setNotice(`Error: ${data.error ?? "No se pudo cancelar la reunión."}`);
     setMeetings((current) => current.filter((meeting) => meeting.id !== meetingId));
     setNotice("Reunión cancelada.");
+    } catch {
+      setNotice("No se pudo cancelar la reunion.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const sendChatMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = message.trim();
     if (!value) return;
-    const entry = { from: "Tú", text: value };
+    if (actionLoading) return;
+    setActionLoading("chat");
+    try {
+    const entry = { from: "Tu", text: value };
     setChatLog((previous) => [...previous, entry]);
-    const saved = await fetch("/api/rooms/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomName, body: value }) });
+    const saved = await fetch("/api/rooms/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomName, body: value }) }).catch(() => ({ ok: false }));
     if (!saved.ok) setNotice("El mensaje se mostró localmente, pero no se pudo guardar.");
-    if (room) {
-      void room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(entry)), { reliable: true });
+    if (room && saved.ok) {
+      void room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ text: value })), { reliable: true });
     }
     setMessage("");
-    setNotice("Mensaje enviado a la sala.");
+    if (saved.ok) setNotice("Mensaje enviado a la sala.");
+    } catch {
+      setNotice("No se pudo enviar el mensaje.");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   return (
@@ -1019,7 +1148,6 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
               <div className="video-panel main-panel">
                 <video ref={localVideoRef} autoPlay muted playsInline className="local-video" />
                 <span className="participant-tag">Tú</span>
-                <audio ref={localAudioRef} autoPlay />
                 {participants.filter((person) => person.id !== room?.localParticipant.identity).length > 0 && <div className="remote-video-grid">
                   {participants.filter((person) => person.id !== room?.localParticipant.identity).map((person) => <div className="remote-tile" key={person.id}>
                     <video ref={(element) => bindRemoteParticipant(person.id, element)} autoPlay playsInline className="remote-video" />
@@ -1036,23 +1164,23 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
                   <button className="side-panel-minimize" onClick={() => setSidePanel(null)} type="button" aria-label="Minimizar panel">−</button>
               </div>
                 {sidePanel === "participants" && <div className="participant-list">
-                  {participants.map((person) => <div className="participant-item" key={person.id}><div className="mini-avatar">{initials(person.name)}</div><div><strong>{person.name}</strong><small>{person.status === "online" ? "En línea" : "Silenciado"}</small></div>{isCreator && person.id !== room?.localParticipant.identity && <button className="participant-mute" type="button" onClick={() => toggleParticipantMute(person.id, person.status === "online")}>{person.status === "online" ? "Silenciar" : "Activar"}</button>}</div>)}
+                  {participants.map((person) => <div className="participant-item" key={person.id}><div className="mini-avatar">{initials(person.name)}</div><div><strong>{person.name}</strong><small>{person.status === "online" ? "En línea" : "Silenciado"}</small></div>{isCreator && person.id !== room?.localParticipant.identity && <button className="participant-mute" type="button" disabled={actionLoading === "mute:" + person.id} onClick={() => toggleParticipantMute(person.id, person.status === "online")}>{person.status === "online" ? "Silenciar" : "Activar"}</button>}</div>)}
                 </div>}
                 {!guestMode && sidePanel === "chat" && <div className="side-chat-content">
                   <div className="chat-list">{chatLog.map((entry, index) => <div className="chat-message" key={`${entry.from}-${index}`}><strong>{entry.from}</strong><span>{entry.text}</span></div>)}</div>
-                  <form className="chat-form" onSubmit={sendChatMessage}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Escribe un mensaje" /><button className="primary small" type="submit">Enviar</button></form>
+                  <form className="chat-form" onSubmit={sendChatMessage}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Escribe un mensaje" /><button className="primary small" type="submit" disabled={actionLoading === "chat"}>Enviar</button></form>
                 </div>}
             </div>
               </div>
 
             <div className="meeting-controls">
-              <button className={`control-button ${microphoneEnabled ? "is-active" : "is-muted"}`} onClick={toggleMicrophone} type="button" title="Activar o silenciar tu micrófono">
+              <button className={`control-button ${microphoneEnabled ? "is-active" : "is-muted"}`} onClick={toggleMicrophone} type="button" disabled={!isCreator || actionLoading !== null} title="Activar o silenciar tu micrófono">
                 {microphoneEnabled ? "Micrófono" : "Mic apagado"}
               </button>
               <button className="control-button is-active" disabled type="button" title="La cámara es obligatoria">
                 📹 Cámara (Obligatoria)
               </button>
-              <button className={`control-button ${screenSharing ? "is-active" : ""}`} onClick={toggleScreenShare} type="button">{screenSharing ? "Dejar de compartir" : "Compartir pantalla"}</button>
+              {!guestMode && <button className={`control-button ${screenSharing ? "is-active" : ""}`} onClick={toggleScreenShare} type="button">{screenSharing ? "Dejar de compartir" : "Compartir pantalla"}</button>}
               {!guestMode && <button className={`control-button ${sidePanel === "chat" ? "is-active" : ""}`} onClick={() => setSidePanel(sidePanel === "chat" ? null : "chat")} type="button">Chat</button>}
               {!guestMode && <button className="control-button" onClick={inviteGuests} type="button">Invitar</button>}
               <button className="control-button danger" onClick={disconnect} type="button">Salir</button>
@@ -1065,19 +1193,16 @@ function Rooms({ setNotice, guestMode = false, lockedRoom }: { setNotice: (value
       ) : (
         <div className="video-placeholder">Para conectar, la cámara debe estar activa y mostrar una imagen visible; el permiso por sí solo no es suficiente.</div>
       )}
-      {!guestMode && inviteOpen && <div className="compose"><form className="compose" onSubmit={sendRoomInvites}><strong>Invitar usuarios registrados</strong><UserPicker users={users} /><button className="primary" type="submit">Enviar invitación</button></form><form className="compose" onSubmit={sendGuestInvite}><strong>Invitar una persona externa</strong><p className="muted">Recibirá un enlace personal para registrarse como invitado.</p><input name="guestEmail" type="email" placeholder="Email de la persona invitada" required /><button className="primary" type="submit">Crear y enviar invitación</button></form>{lastGuestInviteLink && <div className="room-form"><input value={lastGuestInviteLink} readOnly aria-label="Último enlace de invitado" /><button className="primary" type="button" onClick={() => navigator.clipboard.writeText(lastGuestInviteLink).then(() => setNotice("Enlace copiado."))}>Copiar enlace</button></div>}<button className="link-button" type="button" onClick={() => { setInviteOpen(false); setLastGuestInviteLink(""); }}>Cerrar</button></div>}
+      {!guestMode && inviteOpen && <div className="compose">{guestAccess.length > 0 && <div className="guest-access-list"><strong>Invitados con acceso</strong>{guestAccess.map((guest) => <div className="message" key={guest.id}><div><strong>{guest.displayName}</strong><p>{guest.email}</p></div><button className="text-button danger" type="button" onClick={() => void revokeGuest(guest.id)} disabled={actionLoading === "revoke:" + guest.id}>Revocar</button></div>)}</div>}<form className="compose" onSubmit={sendRoomInvites}><strong>Invitar usuarios registrados</strong><UserPicker users={users} /><button className="primary" type="submit" disabled={actionLoading === "room-invite"}>Enviar invitación</button></form><form className="compose" onSubmit={sendGuestInvite}><strong>Invitar una persona externa</strong><p className="muted">Recibirá un enlace personal para registrarse como invitado.</p><input name="guestEmail" type="email" placeholder="Email de la persona invitada" required /><button className="primary" type="submit" disabled={actionLoading === "guest-invite"}>Crear y enviar invitación</button></form>{lastGuestInviteLink && <div className="room-form"><input value={lastGuestInviteLink} readOnly aria-label="Último enlace de invitado" /><button className="primary" type="button" onClick={() => navigator.clipboard.writeText(lastGuestInviteLink).then(() => setNotice("Enlace copiado."))}>Copiar enlace</button></div>}<button className="link-button" type="button" onClick={() => { setInviteOpen(false); setLastGuestInviteLink(""); }}>Cerrar</button></div>}
       {!guestMode && <button className="text-button" type="button" onClick={() => { setEditingMeeting(null); setScheduleOpen((value) => !value); }}>Programar reunión</button>}
-      {!guestMode && scheduleOpen && <form className="compose" key={editingMeeting?.id ?? "new-meeting"} onSubmit={scheduleMeeting}><h4>{editingMeeting ? "Editar reunión" : "Programar reunión"}</h4><label htmlFor="meeting-title">Título</label><input id="meeting-title" name="title" placeholder="Título de la reunión" defaultValue={editingMeeting?.title ?? ""} required /><label htmlFor="meeting-date">Fecha y hora</label><input id="meeting-date" name="scheduledAt" type="datetime-local" defaultValue={editingMeeting ? new Date(editingMeeting.scheduledAt).toISOString().slice(0, 16) : ""} required min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} />{!editingMeeting && <><strong>Usuarios registrados</strong><UserPicker users={users} /><strong>Personas externas</strong><textarea name="guestEmails" placeholder="Emails separados por coma o uno por línea" /></>}<button className="primary" type="submit">{editingMeeting ? "Guardar cambios" : "Programar y enviar enlaces"}</button></form>}
-      {!guestMode && meetings.length > 0 && <div className="meeting-list"><h4>Próximas reuniones</h4>{meetings.map((meeting) => <div className="message" key={meeting.id}><div><strong>{meeting.title}</strong><p>{new Date(meeting.scheduledAt).toLocaleString("es-AR")}</p></div><button className="text-button" type="button" onClick={() => setRoomName(meeting.roomName)}>Usar sala</button><button className="text-button" type="button" onClick={() => { setEditingMeeting({ id: meeting.id, title: meeting.title, scheduledAt: meeting.scheduledAt }); setScheduleOpen(true); }}>Editar</button><button className="text-button danger" type="button" onClick={() => cancelMeeting(meeting.id)}>Cancelar</button></div>)}</div>}
+      {!guestMode && scheduleOpen && <form className="compose" key={editingMeeting?.id ?? "new-meeting"} onSubmit={scheduleMeeting}><h4>{editingMeeting ? "Editar reunión" : "Programar reunión"}</h4><label htmlFor="meeting-title">Título</label><input id="meeting-title" name="title" placeholder="Título de la reunión" defaultValue={editingMeeting?.title ?? ""} required /><label htmlFor="meeting-date">Fecha y hora</label><input id="meeting-date" name="scheduledAt" type="datetime-local" defaultValue={editingMeeting ? toLocalDateTimeValue(editingMeeting.scheduledAt) : ""} required min={toLocalDateTimeValue(new Date(Date.now() + 60000))} />{!editingMeeting && <><strong>Usuarios registrados</strong><UserPicker users={users} /><strong>Personas externas</strong><textarea name="guestEmails" placeholder="Emails separados por coma o uno por línea" /></>}<button className="primary" type="submit" disabled={actionLoading === "schedule"}>{editingMeeting ? "Guardar cambios" : "Programar y enviar enlaces"}</button></form>}
+      {!guestMode && meetings.length > 0 && <div className="meeting-list"><h4>Próximas reuniones</h4>{meetings.map((meeting) => <div className="message" key={meeting.id}><div><strong>{meeting.title}</strong><p>{new Date(meeting.scheduledAt).toLocaleString("es-AR")}</p></div><button className="text-button" type="button" onClick={() => setRoomName(meeting.roomName)}>Usar sala</button><button className="text-button" type="button" onClick={() => { setEditingMeeting({ id: meeting.id, title: meeting.title, scheduledAt: meeting.scheduledAt }); setScheduleOpen(true); }}>Editar</button><button className="text-button danger" type="button" onClick={() => cancelMeeting(meeting.id)} disabled={actionLoading === "cancel:" + meeting.id}>Cancelar</button></div>)}</div>}
     </section>
   );
 }
 
-function Contacts({ setView }: { setView: (view: string) => void }) { const [users, setUsers] = useState<User[]>([]); useEffect(() => { fetch("/api/users").then((response) => response.ok && response.json()).then((result) => result && setUsers(result)); }, []); return <section className="panel"><h3>Contactos activos</h3>{users.map((contact) => <div className="room" key={contact.id}><div className="avatar green">{initials(contact.displayName)}</div><div><strong>{contact.displayName}</strong><small>{contact.email}</small></div><button className="join" onClick={() => setView("mensajes")}>Mensaje</button></div>)}</section>; }
 
-function Approvals({ setNotice }: { setNotice: (value: string) => void }) { const [users, setUsers] = useState<User[]>([]); const load = () => fetch("/api/admin/users").then((response) => response.ok && response.json()).then((result) => result && setUsers(result)); useEffect(() => { void load(); }, []); const update = async (userId: string, action: string) => { await fetch("/api/admin/users", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId, action }) }); setNotice("Estado de cuenta actualizado"); void load(); }; return <section className="panel"><div className="panel-head"><h3>Cuentas pendientes</h3><span className="count">{users.length}</span></div>{users.length ? users.map((pending) => <div className="room" key={pending.id}><div className="avatar orange">{initials(pending.displayName)}</div><div><strong>{pending.displayName}</strong><small>{pending.email} · {pending.role === "GUEST" ? "Invitado" : "Usuario"}</small></div><button className="join" onClick={() => update(pending.id, "approve")}>Aprobar</button><button className="join danger" onClick={() => update(pending.id, "suspend")}>Rechazar</button></div>) : <p className="muted">No hay cuentas pendientes.</p>}</section>; }
 
 function Nav({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: string; children: string }) { return <button className={`nav-link ${active ? "active" : ""}`} onClick={onClick}><span>{icon}</span>{children}</button>; }
 function initials(name: string) { return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase(); }
 function title(view: string) { return ({ mensajes: "Mensajes", salas: "Salas de videollamada", contactos: "Contactos", aprobaciones: "Aprobaciones", auditoria: "Auditoría" } as Record<string, string>)[view] ?? "VideoSystem"; }
-

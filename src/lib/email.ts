@@ -24,12 +24,18 @@ function safeHeader(value: string) {
 
 function initializeTransporter() {
   if (!transporter) {
-    // En desarrollo, usamos Mailhog (http://localhost:8025)
-    // En producción, usa tus credenciales de SMTP
+    const isProduction = process.env.NODE_ENV === "production";
+    const secure = process.env.SMTP_SECURE === "true";
+    const requireTls = isProduction || process.env.SMTP_REQUIRE_TLS === "true";
+    if (isProduction && !secure && process.env.SMTP_REQUIRE_TLS !== "true") {
+      throw new Error("SMTP TLS es obligatorio en produccion");
+    }
     transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || "localhost",
       port: parseInt(process.env.SMTP_PORT || "1025"),
-      secure: process.env.SMTP_SECURE === "true",
+      secure,
+      requireTLS: requireTls,
+      tls: requireTls ? { minVersion: "TLSv1.2" } : undefined,
       auth: process.env.SMTP_USER && process.env.SMTP_HOST !== "localhost"
         ? {
             user: process.env.SMTP_USER,
@@ -40,8 +46,8 @@ function initializeTransporter() {
       greetingTimeout: connectionTimeout,
       socketTimeout,
     });
-
   }
+
   return transporter;
 }
 
