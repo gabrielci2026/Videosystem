@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashString } from "@/lib/security";
+import { isSameOrigin } from "@/lib/request-security";
+import { readJsonBody } from "@/lib/request-body";
 
 const tokenSchema = z.string().min(32).max(256);
 
-export async function GET(request: Request) {
-  const parsed = tokenSchema.safeParse(new URL(request.url).searchParams.get("token"));
+async function resolve(token: string | null) {
+  const parsed = tokenSchema.safeParse(token);
   if (!parsed.success) return NextResponse.json({ error: "Invitación inválida" }, { status: 400 });
 
   const invitation = await prisma.invitation.findUnique({
@@ -31,4 +33,17 @@ export async function GET(request: Request) {
     title: meeting?.title ?? `Llamada ${invitation.roomName}`,
     accepted: Boolean(invitation.acceptedAt),
   }, { headers: { "Cache-Control": "no-store" } });
+}
+
+export async function POST(request: Request) {
+  if (!isSameOrigin(request)) return NextResponse.json({ error: "Origen no permitido" }, { status: 403 });
+  const body = await readJsonBody(request);
+  const token = body && typeof body === "object" && "token" in body ? String(body.token) : null;
+  return resolve(token);
+}
+
+// Kept temporarily so invitations generated before the fragment migration do
+// not break. New links never put their token in this URL.
+export async function GET(request: Request) {
+  return resolve(new URL(request.url).searchParams.get("token"));
 }

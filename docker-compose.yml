@@ -21,12 +21,14 @@ services:
     ports:
       - "7880:7880"
       - "7881:7881"
-      - "7882:7882/udp"
     environment:
       LIVEKIT_KEYS: "devkey: replace-me"
 
   mailhog:
-    image: mailhog/mailhog:latest
+    # MailHog's legacy Angular preview can display {{preview.previewHTML}}
+    # literally in modern Chrome. Mailpit keeps the same local SMTP port and
+    # provides a maintained HTML preview.
+    image: axllent/mailpit:latest
     ports:
       - "1025:1025"
       - "8025:8025"

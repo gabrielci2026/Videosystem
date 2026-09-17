@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
 import { isLiveKitParticipantConnected } from "@/lib/livekit-admin";
+import { getMeetingAccessState } from "@/lib/meeting-access";
 
 const input = z.object({ roomName: z.string().min(3).max(120).regex(/^[a-zA-Z0-9_-]+$/) });
 
@@ -31,19 +32,33 @@ export async function POST(request: Request) {
   const meeting = await prisma.meeting.findUnique({ where: { roomName }, include: { invites: { select: { userId: true } } } });
   if (meeting) {
     if (meeting.status === "CANCELLED") return NextResponse.json({ error: "Esta reunion ya no esta disponible" }, { status: 410 });
-    if (meeting.scheduledAt > new Date()) return NextResponse.json({ error: "La reunion aun no ha comenzado" }, { status: 425 });
+    const meetingAccess = getMeetingAccessState(meeting.scheduledAt);
+    if (meetingAccess === "NOT_STARTED") return NextResponse.json({ error: "La reunion aun no ha comenzado" }, { status: 425 });
+    if (meetingAccess === "ENDED") return NextResponse.json({ error: "La ventana de acceso de la reunion ya finalizo" }, { status: 410 });
     const allowed = meeting.organizerId === user.id || meeting.invites.some((invite) => invite.userId === user.id);
     if (!allowed || (user.role === "GUEST" && !guestInvitation)) return NextResponse.json({ error: "No estás invitado a esta reunión" }, { status: 403 });
   } else {
-    const room = await prisma.callRoom.findUnique({ where: { roomName }, include: { members: { select: { userId: true } } } });
+    let room = await prisma.callRoom.findUnique({ where: { roomName }, include: { members: { select: { userId: true } } } });
     if (!room) {
       if (user.role === "GUEST") return NextResponse.json({ error: "No estás invitado a esta sala" }, { status: 403 });
-      await prisma.callRoom.create({ data: { roomName, ownerId: user.id } });
-    } else if ((room.ownerId !== user.id && !room.members.some((member) => member.userId === user.id)) || (user.role === "GUEST" && !guestInvitation)) {
+      // Upsert makes two first-time joins converge on one owner instead of
+      // turning the unique constraint race into a 500 response.
+      room = await prisma.callRoom.upsert({
+        where: { roomName },
+        update: {},
+        create: { roomName, ownerId: user.id },
+        include: { members: { select: { userId: true } } },
+      });
+    }
+    if ((room.ownerId !== user.id && !room.members.some((member) => member.userId === user.id)) || (user.role === "GUEST" && !guestInvitation)) {
       return NextResponse.json({ error: "No estás invitado a esta sala" }, { status: 403 });
     }
   }
-  if (await isLiveKitParticipantConnected(roomName, user.id)) {
+  const liveKitConnectionState = await isLiveKitParticipantConnected(roomName, user.id);
+  if (liveKitConnectionState === null) {
+    return NextResponse.json({ error: "No se pudo comprobar el estado de LiveKit. Intenta nuevamente." }, { status: 503 });
+  }
+  if (liveKitConnectionState) {
     return NextResponse.json({ error: "Ya tienes una conexion activa en esta sala" }, { status: 409 });
   }
   const roomOwner = meeting ? null : await prisma.callRoom.findUnique({ where: { roomName }, select: { ownerId: true } });

@@ -11,7 +11,7 @@ Plataforma autohosteable de mensajeria interna y videollamadas con LiveKit.
 5. Ejecutar `pnpm db:generate`.
 6. Ejecutar `pnpm db:seed` para crear el admin y los usuarios de prueba.
 7. Ejecutar `pnpm dev` y abrir http://localhost:3000.
-8. Abrir http://localhost:8025 para consultar OTP y correos locales.
+8. Abrir http://localhost:8025 para consultar OTP y correos locales en Mailpit.
 
 En desarrollo, las credenciales son `admin@videosystem.local` / `AdminVideo2026!`, `usuario1@videosystem.local` / `UsuarioUno2026!` y `usuario2@videosystem.local` / `UsuarioDos2026!`.
 
@@ -23,7 +23,7 @@ En desarrollo, las credenciales son `admin@videosystem.local` / `AdminVideo2026!
 - Salas: crear una sala con usuario 1, invitar usuario 2 y comprobar que un usuario no invitado recibe `403`.
 - Cámara (creador, usuario e invitado): denegar permisos, tapar la lente o seleccionar una fuente sin imagen y comprobar que no permite entrar. Durante la llamada, tapar la cámara más de cinco segundos o desconectarla debe cerrar la llamada con un aviso; volver a entrar requiere imagen nuevamente. Al salir de la vista, comprobar que se apagan cámara y micrófono.
 - Llamada: abrir la misma sala en dos navegadores, verificar video remoto y enviar un mensaje desde la pestaña Chat.
-- Reunión: programar una reunión con usuarios activos y comprobar que reciben el correo con enlace en MailHog.
+- Reunión: programar una reunión con usuarios activos y comprobar que reciben el correo con enlace en Mailpit.
 - Invitado externo: desde una sala elegir `Invitar`, ingresar un email sin cuenta, abrir su enlace personal, registrarse con ese mismo email, confirmar el correo y aprobar la cuenta desde Administración. Al completar el OTP debe acceder directamente a la llamada sin ver el dashboard ni el chat.
 - Seguridad de invitación: comprobar que otro email no puede usar el token, que el mismo token no permite dos registros y que un simple enlace `?room=` no crea una cuenta `GUEST`.
 - Salud: `GET /api/health` debe devolver `200` con PostgreSQL `ok`.
@@ -43,8 +43,10 @@ Ejecutar `pnpm test:camera` para las pruebas de regresión en Chrome/Chromium/Ed
 - Las contrasenas se almacenan con bcrypt y las sesiones usan cookies HttpOnly firmadas.
 - Las contrasenas deben cambiarse cada 30 dias; una cuenta vencida solo puede acceder al formulario de actualizacion desde Mi perfil.
 - Los OTP nuevos se generan con aleatoriedad criptográfica, se almacenan con hash y se consumen una sola vez.
+- Las invitaciones nuevas llevan el token en el fragmento de la URL y lo canjean por POST, para que no aparezca en los logs del proxy ni en el historial de solicitudes del servidor. Los enlaces antiguos con `?invite=` siguen siendo aceptados temporalmente.
+- En producción, los controles de límite por dirección solo se activan si el proxy entrega una IP confiable mediante `X-Real-IP` o el último valor de `X-Forwarded-For`; nunca se usa un bucket común para solicitudes sin IP identificable. Los límites por cuenta/email siguen activos siempre.
 - El rate limiting se persiste en PostgreSQL, por lo que se comparte entre réplicas; conviene vigilar el crecimiento de la tabla y ejecutar la retención periódicamente.
-- El chat de llamada se distribuye por LiveKit, pero todavía no se persiste en PostgreSQL.
+- El chat de llamada persiste su historial en PostgreSQL y distribuye mensajes en LiveKit; queda pendiente unificar ambas vías en una única fuente de verdad.
 - Las migraciones nuevas deben versionarse con `prisma migrate`; `db:push` queda reservado para prototipos locales.
 - LiveKit corre dentro de la infraestructura propia. `--dev` es solo para desarrollo local.
 - Los archivos no se habilitan dentro de llamadas. El módulo de Mensajes tampoco expone adjuntos hasta contar con un almacenamiento y análisis de seguridad dedicado.
@@ -52,4 +54,19 @@ Ejecutar `pnpm test:camera` para las pruebas de regresión en Chrome/Chromium/Ed
 
 ## Producción
 
-Antes de publicar hay que retirar MailHog, usar HTTPS, no exponer PostgreSQL, configurar backups y revisar las credenciales iniciales. El Compose de producción ejecuta las migraciones antes de la app y mantiene un worker de retención que limpia datos caducados y revoca accesos de invitados expirados.
+Antes de publicar hay que retirar Mailpit, usar HTTPS, no exponer PostgreSQL, configurar backups y revisar las credenciales iniciales.
+Con Tailscale Serve usa este esquema:
+    PUBLISH_HOST=127.0.0.1
+    APP_URL=https://NODO.TAILNET.ts.net
+    LIVEKIT_URL=wss://NODO.TAILNET.ts.net:7880
+    LIVEKIT_ADMIN_URL=http://livekit:7880
+    LIVEKIT_NODE_IP=100.x.y.z
+
+Después de levantar Compose, configura Serve en el servidor:
+    tailscale serve --https=443 3000
+    tailscale serve --tls-terminated-tcp=7880 tcp://127.0.0.1:7880
+    tailscale serve --tcp=7881 tcp://127.0.0.1:7881
+    tailscale serve status
+
+El primer endpoint publica la aplicación con HTTPS; el segundo conserva la señalización WebSocket de LiveKit al terminar TLS en Tailscale; el tercero expone el transporte TCP usado por force_tcp. No uses Funnel. La ACL de Tailscale debe permitir a los participantes llegar al nodo y a los puertos 443, 7880 y 7881. El proxy debe sobrescribir X-Forwarded-For y X-Forwarded-Proto; la aplicación queda ligada a loopback para que nadie pueda falsificar esos headers desde la red.
+Las reuniones no requieren una hora final: el acceso queda abierto desde scheduledAt durante MEETING_ACCESS_WINDOW_HOURS horas (24 por defecto). El Compose de producción ejecuta las migraciones antes de la app y mantiene un worker de retención que limpia datos caducados y revoca accesos de invitados expirados.

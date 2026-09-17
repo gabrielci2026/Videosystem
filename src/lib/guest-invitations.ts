@@ -9,7 +9,8 @@ export function guestInvitationExpiry(scheduledAt?: Date) {
 }
 
 export function guestInvitationLink(token: string) {
-  return `${getAppUrl()}/?invite=${encodeURIComponent(token)}`;
+  // Keep the bearer token out of proxy logs, referrers and the URL sent to the server.
+  return `${getAppUrl()}/#invite=${encodeURIComponent(token)}`;
 }
 
 export function normalizeGuestEmails(emails: string[]) {

@@ -31,6 +31,10 @@ export async function DELETE(request: Request, context: Context) {
   const meeting = await prisma.meeting.findUnique({ where: { id } });
   if (!meeting || meeting.organizerId !== user.id) return NextResponse.json({ error: "Solo el organizador puede cancelar la reunión" }, { status: 403 });
   const cancelled = await prisma.meeting.update({ where: { id }, data: { status: "CANCELLED" } });
-  await revokeLiveKitRoom(cancelled.roomName);
-  return NextResponse.json(cancelled);
+  const liveKitRevoked = await revokeLiveKitRoom(cancelled.roomName);
+  return NextResponse.json({
+    ...cancelled,
+    liveKitRevoked,
+    ...(liveKitRevoked ? {} : { warning: "La reunión se canceló, pero no se pudo expulsar a los participantes conectados. Revisa LiveKit." }),
+  });
 }

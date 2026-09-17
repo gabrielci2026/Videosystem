@@ -4,7 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession, getCurrentUser } from "@/lib/auth";
 import { validatePasswordStrength } from "@/lib/security";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
 
@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   const user = await getCurrentUser({ allowExpiredPassword: true });
   if (!user) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
 
-  const rate = await checkRateLimit(`password-change:${getClientAddress(request)}:${user.id}`, 5, 15 * 60 * 1000);
+  const rate = await checkRateLimit(`password-change:${user.id}`, 5, 15 * 60 * 1000);
   if (!rate.allowed) return NextResponse.json({ error: `Demasiados intentos. Espera ${rate.retryAfterSeconds} segundos.` }, { status: 429 });
 
   const parsed = input.safeParse(await readJsonBody(request));

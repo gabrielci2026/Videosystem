@@ -37,7 +37,12 @@ services:
       livekit:
         condition: service_started
     ports:
-      - "3000:3000"
+      - "${PUBLISH_HOST:-127.0.0.1}:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header='x-forwarded-proto: https' http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:17-alpine
@@ -61,9 +66,8 @@ services:
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}"
     ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "7882:7882/udp"
+      - "${PUBLISH_HOST:-127.0.0.1}:7880:7880"
+      - "${PUBLISH_HOST:-127.0.0.1}:7881:7881"
 
 volumes:
   postgres_production:

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
 
@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   if (user.role === "GUEST") return NextResponse.json({ error: "Los invitados no tienen acceso a mensajes" }, { status: 403 });
-  const rate = await checkRateLimit("messages:" + user.id + ":" + getClientAddress(request), 60, 60 * 60 * 1000);
+  const rate = await checkRateLimit("messages:" + user.id, 60, 60 * 60 * 1000);
   if (!rate.allowed) return NextResponse.json({ error: "Demasiados mensajes. Intenta nuevamente mas tarde." }, { status: 429 });
   const parsed = input.safeParse(await readJsonBody(request));
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });

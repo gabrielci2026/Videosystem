@@ -2,7 +2,7 @@ import nodemailer, { type SendMailOptions, type Transporter } from "nodemailer";
 import { after } from "next/server";
 import { getAppUrl } from "@/lib/app-url";
 
-// Configuración del transporte de email usando Mailhog en local
+// Configuración del transporte de email usando Mailpit en local
 let transporter: Transporter | null = null;
 
 function readTimeout(name: string, fallback: number) {
@@ -80,6 +80,7 @@ export async function sendOTPEmail(
       from: process.env.SMTP_FROM || '"VideoSystem" <noreply@videosystem.local>',
       to: email,
       subject: "Tu código de verificación VideoSystem",
+      text: `Hola ${displayName},\n\nTu código de verificación para iniciar sesión en VideoSystem es: ${otp}\n\nEste código expira en 10 minutos. Si no intentaste iniciar sesión, ignora este mensaje.`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Código de Verificación VideoSystem</h2>

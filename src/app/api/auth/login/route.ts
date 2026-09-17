@@ -5,9 +5,10 @@ import { prisma } from "@/lib/prisma";
 import { generateOTP, hashString } from "@/lib/security";
 import { sendOTPEmail } from "@/lib/email";
 import { clearSession } from "@/lib/auth";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkAddressRateLimit, checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
+import { getMeetingAccessState } from "@/lib/meeting-access";
 
 const input = z.object({ email: z.string().email(), password: z.string(), roomName: z.string().min(3).max(120).regex(/^[a-zA-Z0-9_-]+$/).optional() });
 
@@ -22,8 +23,8 @@ export async function POST(request: Request) {
   const normalizedEmail = parsed.data.email.toLowerCase();
   const address = getClientAddress(request);
   const [addressRate, emailRate] = await Promise.all([
-    checkRateLimit("login-address:" + address, 50, 15 * 60 * 1000),
-    checkRateLimit("login:" + address + ":" + normalizedEmail, 5, 15 * 60 * 1000),
+    checkAddressRateLimit("login-address", address, 50, 15 * 60 * 1000),
+    checkRateLimit("login:" + normalizedEmail, 5, 15 * 60 * 1000),
   ]);
   if (!addressRate.allowed || !emailRate.allowed) {
     const retryAfterSeconds = Math.max(addressRate.retryAfterSeconds, emailRate.retryAfterSeconds);
@@ -31,7 +32,8 @@ export async function POST(request: Request) {
   }
   const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
   
-  if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
+  const passwordHash = user?.passwordHash ?? "$2b$12$xv.OnGeoAQKdn4jz4r95DOCdK6bzHhRTaMOcpffLE99NWlQRSONd2";
+  if (!user || !(await bcrypt.compare(parsed.data.password, passwordHash))) {
     return NextResponse.json({ error: "Credenciales inválidas" }, { status: 401 });
   }
   
@@ -51,7 +53,11 @@ export async function POST(request: Request) {
     });
     const allowed = Boolean(invitation && (room?.members.some((member) => member.userId === user.id) || meeting?.invites.some((invite) => invite.userId === user.id)));
     if (!allowed || meeting?.status === "CANCELLED") return NextResponse.json({ error: "No estas invitado a esta sala" }, { status: 403 });
-    if (meeting && meeting.scheduledAt > new Date()) return NextResponse.json({ error: "La reunion aun no ha comenzado" }, { status: 425 });
+    if (meeting) {
+      const meetingAccess = getMeetingAccessState(meeting.scheduledAt);
+      if (meetingAccess === "NOT_STARTED") return NextResponse.json({ error: "La reunion aun no ha comenzado" }, { status: 425 });
+      if (meetingAccess === "ENDED") return NextResponse.json({ error: "La ventana de acceso de la reunion ya finalizo" }, { status: 410 });
+    }
   }
   
   // Generar OTP

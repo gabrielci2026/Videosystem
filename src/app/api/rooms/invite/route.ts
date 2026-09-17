@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { sendEmailAfterResponse, sendMeetingInviteEmail } from "@/lib/email";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const input = z.object({ roomName: z.string().min(3).max(120).regex(/^[a-zA-Z0-9_-]+$/), userIds: z.array(z.string().min(1)).min(1).max(50) });
 
@@ -15,12 +15,21 @@ export async function POST(request: Request) {
   if (!organizer || organizer.status !== "ACTIVE" || organizer.role === "GUEST") return NextResponse.json({ error: "No autorizado" }, { status: 403 });
   const parsed = input.safeParse(await readJsonBody(request));
   if (!parsed.success) return NextResponse.json({ error: "Selecciona al menos un usuario" }, { status: 400 });
-  const address = getClientAddress(request);
-  const rate = await checkRateLimit(`invite-users:${organizer.id}:${address}`, 30, 60 * 60 * 1000);
+  const rate = await checkRateLimit(`invite-users:${organizer.id}`, 30, 60 * 60 * 1000);
   if (!rate.allowed) return NextResponse.json({ error: `Demasiadas invitaciones. Espera ${rate.retryAfterSeconds} segundos.` }, { status: 429 });
 
   const users = await prisma.user.findMany({ where: { id: { in: parsed.data.userIds }, status: "ACTIVE", role: { not: "GUEST" }, NOT: { id: organizer.id } }, select: { email: true, displayName: true } });
   if (users.length !== new Set(parsed.data.userIds).size) return NextResponse.json({ error: "Solo puedes invitar cuentas activas" }, { status: 400 });
+  const meeting = await prisma.meeting.findUnique({ where: { roomName: parsed.data.roomName }, select: { id: true, organizerId: true, status: true, title: true, scheduledAt: true, roomName: true } });
+  if (meeting) {
+    if (meeting.organizerId !== organizer.id || meeting.status === "CANCELLED") return NextResponse.json({ error: "Solo el organizador puede invitar usuarios a esta reunión" }, { status: 403 });
+    await prisma.meetingInvite.createMany({ data: parsed.data.userIds.map((userId) => ({ meetingId: meeting.id, userId })), skipDuplicates: true });
+    sendEmailAfterResponse("meeting-invites", async () => {
+      const results = await Promise.all(users.map((user) => sendMeetingInviteEmail(user.email, user.displayName, organizer.displayName, meeting.title, meeting.scheduledAt, meeting.roomName)));
+      return results.every(Boolean);
+    });
+    return NextResponse.json({ sentCount: users.length, emailQueued: true });
+  }
   const room = await prisma.callRoom.upsert({ where: { roomName: parsed.data.roomName }, update: {}, create: { roomName: parsed.data.roomName, ownerId: organizer.id } });
   if (room.ownerId !== organizer.id) return NextResponse.json({ error: "Solo el propietario puede invitar usuarios" }, { status: 403 });
   await prisma.callRoomMember.createMany({ data: parsed.data.userIds.map((userId) => ({ roomId: room.id, userId })), skipDuplicates: true });

@@ -5,7 +5,7 @@ let roomService: RoomServiceClient | null | undefined;
 
 function getRoomService() {
   if (roomService !== undefined) return roomService;
-  const url = process.env.LIVEKIT_URL;
+  const url = process.env.LIVEKIT_ADMIN_URL?.trim() || process.env.LIVEKIT_URL;
   const apiKey = process.env.LIVEKIT_API_KEY;
   const apiSecret = process.env.LIVEKIT_API_SECRET;
   if (!url || !apiKey || !apiSecret) {
@@ -21,27 +21,29 @@ const revokeTimestamp = () => BigInt(Math.floor(Date.now() / 1000));
 
 export async function revokeLiveKitParticipant(roomName: string, identity: string) {
   const service = getRoomService();
-  if (!service) return;
+  if (!service) return false;
   try {
     await service.removeParticipant(roomName, identity, { revokeTokenTs: revokeTimestamp() });
+    return true;
   } catch (error: any) {
     // The participant may already have left. Keep the database revocation successful.
-    if (!String(error?.message ?? error).toLowerCase().includes("not found")) {
-      console.error("LiveKit participant revocation failed", { roomName, identity, error });
-    }
+    if (String(error?.message ?? error).toLowerCase().includes("not found")) return true;
+    console.error("LiveKit participant revocation failed", { roomName, identity, error });
+    return false;
   }
 }
 
 export async function revokeLiveKitRoom(roomName: string) {
   const service = getRoomService();
-  if (!service) return;
+  if (!service) return false;
   try {
     const participants = await service.listParticipants(roomName);
-    await Promise.all(participants.map((participant) => revokeLiveKitParticipant(roomName, participant.identity)));
+    const results = await Promise.all(participants.map((participant) => revokeLiveKitParticipant(roomName, participant.identity)));
+    return results.every(Boolean);
   } catch (error: any) {
-    if (!String(error?.message ?? error).toLowerCase().includes("not found")) {
-      console.error("LiveKit room revocation failed", { roomName, error });
-    }
+    if (String(error?.message ?? error).toLowerCase().includes("not found")) return true;
+    console.error("LiveKit room revocation failed", { roomName, error });
+    return false;
   }
 }
 
@@ -58,12 +60,13 @@ export async function revokeLiveKitUserAccess(userId: string) {
     ...meetingInvites.map((item) => item.meeting.roomName),
     ...organizedMeetings.map((item) => item.roomName),
   ]);
-  await Promise.all([...roomNames].map((roomName) => revokeLiveKitParticipant(roomName, userId)));
+  const results = await Promise.all([...roomNames].map((roomName) => revokeLiveKitParticipant(roomName, userId)));
+  return results.every(Boolean);
 }
 
 export async function setLiveKitParticipantMuted(roomName: string, identity: string, muted: boolean) {
   const service = getRoomService();
-  if (!service) return false;
+  if (!service) return null;
   try {
     const participant = await service.getParticipant(roomName, identity);
     const microphone = participant.tracks.find((track) => track.source === TrackSource.MICROPHONE && track.sid);
@@ -73,6 +76,7 @@ export async function setLiveKitParticipantMuted(roomName: string, identity: str
   } catch (error: any) {
     if (!String(error?.message ?? error).toLowerCase().includes("not found")) {
       console.error("LiveKit microphone moderation failed", { roomName, identity, error });
+      return null;
     }
     return false;
   }
@@ -81,13 +85,14 @@ export async function setLiveKitParticipantMuted(roomName: string, identity: str
 
 export async function isLiveKitParticipantConnected(roomName: string, identity: string) {
   const service = getRoomService();
-  if (!service) return false;
+  if (!service) return null;
   try {
     const participants = await service.listParticipants(roomName);
     return participants.some((participant) => participant.identity === identity);
   } catch (error: any) {
     if (!String(error?.message ?? error).toLowerCase().includes("not found")) {
       console.error("LiveKit participant lookup failed", { roomName, identity, error });
+      return null;
     }
     return false;
   }

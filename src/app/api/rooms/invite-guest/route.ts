@@ -7,7 +7,7 @@ import { guestInvitationExpiry, guestInvitationLink } from "@/lib/guest-invitati
 import { generateSecureToken, hashString } from "@/lib/security";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkAddressRateLimit, checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 
 const input = z.object({
   roomName: z.string().min(3).max(120).regex(/^[a-zA-Z0-9_-]+$/),
@@ -25,12 +25,13 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "Email o sala inválidos" }, { status: 400 });
   const email = parsed.data.email.trim().toLowerCase();
   const address = getClientAddress(request);
-  const [organizerRate, emailRate] = await Promise.all([
+  const [organizerRate, addressRate, emailRate] = await Promise.all([
     checkRateLimit(`invite-guest:organizer:${organizer.id}`, 30, 60 * 60 * 1000),
-    checkRateLimit(`invite-guest:address:${address}:${email}`, 5, 60 * 60 * 1000),
+    checkAddressRateLimit(`invite-guest:address:${email}`, address, 5, 60 * 60 * 1000),
+    checkRateLimit(`invite-guest:email:${email}`, 5, 60 * 60 * 1000),
   ]);
-  if (!organizerRate.allowed || !emailRate.allowed) {
-    const retryAfterSeconds = Math.max(organizerRate.retryAfterSeconds, emailRate.retryAfterSeconds);
+  if (!organizerRate.allowed || !addressRate.allowed || !emailRate.allowed) {
+    const retryAfterSeconds = Math.max(organizerRate.retryAfterSeconds, addressRate.retryAfterSeconds, emailRate.retryAfterSeconds);
     return NextResponse.json({ error: `Demasiadas invitaciones. Espera ${retryAfterSeconds} segundos.` }, { status: 429 });
   }
   if (email === organizer.email || await prisma.user.findUnique({ where: { email }, select: { id: true } })) {

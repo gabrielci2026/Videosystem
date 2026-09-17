@@ -2,15 +2,16 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { readJsonBody } from "@/lib/request-body";
 import { isSameOrigin } from "@/lib/request-security";
+import { getMeetingAccessState } from "@/lib/meeting-access";
 
 const input = z.object({ roomName: z.string().min(3).max(120).regex(/^[a-zA-Z0-9_-]+$/), body: z.string().trim().min(1).max(2000) });
 
 async function canAccessRoom(roomName: string, userId: string) {
   const meeting = await prisma.meeting.findUnique({ where: { roomName }, include: { invites: { select: { userId: true } } } });
-  if (meeting) return meeting.status === "SCHEDULED" && meeting.scheduledAt <= new Date() && (meeting.organizerId === userId || meeting.invites.some((invite) => invite.userId === userId));
+  if (meeting) return meeting.status === "SCHEDULED" && getMeetingAccessState(meeting.scheduledAt) === "OPEN" && (meeting.organizerId === userId || meeting.invites.some((invite) => invite.userId === userId));
   const room = await prisma.callRoom.findUnique({ where: { roomName }, include: { members: { select: { userId: true } } } });
   return Boolean(room && (room.ownerId === userId || room.members.some((member) => member.userId === userId)));
 }
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   if ((user.role as string) === "GUEST") return NextResponse.json({ error: "Los invitados no tienen acceso al chat" }, { status: 403 });
-  const rate = await checkRateLimit(`room-message:${user.id}:${getClientAddress(request)}`, 120, 60 * 60 * 1000);
+  const rate = await checkRateLimit(`room-message:${user.id}`, 120, 60 * 60 * 1000);
   if (!rate.allowed) return NextResponse.json({ error: "Demasiados mensajes. Intenta nuevamente mas tarde." }, { status: 429 });
   const parsed = input.safeParse(await readJsonBody(request));
   if (!parsed.success || !(await canAccessRoom(parsed.data.roomName, user.id))) return NextResponse.json({ error: "Datos inválidos o sala no autorizada" }, { status: 403 });

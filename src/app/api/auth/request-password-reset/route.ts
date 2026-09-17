@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { generateSecureToken, hashString } from "@/lib/security";
 import { sendEmailAfterResponse, sendPasswordResetEmail } from "@/lib/email";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkAddressRateLimit, checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { getAppUrl } from "@/lib/app-url";
 import { readJsonBody } from "@/lib/request-body";
@@ -17,8 +17,8 @@ export async function POST(request: Request) {
   const email = parsed.data.email.toLowerCase();
   const address = getClientAddress(request);
   const [addressRate, emailRate] = await Promise.all([
-    checkRateLimit("reset-address:" + address, 10, 15 * 60 * 1000),
-    checkRateLimit("reset:" + address + ":" + email, 3, 15 * 60 * 1000),
+    checkAddressRateLimit("reset-address", address, 10, 15 * 60 * 1000),
+    checkRateLimit("reset:" + email, 3, 15 * 60 * 1000),
   ]);
   if (!addressRate.allowed || !emailRate.allowed) return NextResponse.json({ message: "Si la cuenta existe, recibirás instrucciones por email." });
   const user = await prisma.user.findUnique({ where: { email } });

@@ -69,6 +69,10 @@ export async function DELETE(request: Request) {
       data: { actorId: manager.user.id, action: "guest.revoked", metadata: { guestId: guest.id, roomName: parsed.data.roomName } },
     });
   });
-  await revokeLiveKitParticipant(parsed.data.roomName, guest.id);
-  return NextResponse.json({ revoked: true });
+  const liveKitRevoked = await revokeLiveKitParticipant(parsed.data.roomName, guest.id);
+  return NextResponse.json({
+    revoked: true,
+    liveKitRevoked,
+    ...(liveKitRevoked ? {} : { warning: "El acceso se revocó en la base de datos, pero no se pudo expulsar al invitado conectado. Revisa LiveKit." }),
+  });
 }

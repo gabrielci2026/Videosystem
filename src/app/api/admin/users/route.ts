@@ -40,9 +40,7 @@ export async function PATCH(request: Request) {
     await transaction.auditEvent.create({ data: { actorId: admin.id, action: `user.${parsed.data.action}`, metadata: { userId: updated.id } } });
     return updated;
   });
-  if (parsed.data.action === "suspend") {
-    await revokeLiveKitUserAccess(target.id);
-  }
+  const liveKitRevoked = parsed.data.action === "suspend" ? await revokeLiveKitUserAccess(target.id) : true;
   if (parsed.data.action === "approve" && target.role === "GUEST") {
     const invitation = await prisma.invitation.findFirst({
       where: { acceptedById: target.id, roomName: { not: null } },
@@ -51,6 +49,11 @@ export async function PATCH(request: Request) {
     });
     if (invitation?.roomName) sendEmailAfterResponse("guest-approved", () => sendGuestApprovedEmail(target.email, target.displayName, invitation.roomName!));
   }
-  return NextResponse.json({ id: user.id, status: user.status });
+  return NextResponse.json({
+    id: user.id,
+    status: user.status,
+    liveKitRevoked,
+    ...(liveKitRevoked ? {} : { warning: "La cuenta fue suspendida, pero no se pudo expulsar al usuario de LiveKit." }),
+  });
 }
 

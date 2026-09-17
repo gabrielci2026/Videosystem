@@ -8,7 +8,7 @@ import { generateSecureToken, hashString } from "@/lib/security";
 import { isSameOrigin } from "@/lib/request-security";
 import { getAppUrl } from "@/lib/app-url";
 import { readJsonBody } from "@/lib/request-body";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkAddressRateLimit, checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 
 const input = z.object({ 
   email: z.string().email(), 
@@ -26,8 +26,8 @@ export async function POST(request: Request) {
   const normalizedEmail = email.toLowerCase();
   const address = getClientAddress(request);
   const [addressRate, emailRate] = await Promise.all([
-    checkRateLimit(`register:address:${address}`, 10, 60 * 60 * 1000),
-    checkRateLimit(`register:email:${address}:${normalizedEmail}`, 3, 60 * 60 * 1000),
+    checkAddressRateLimit("register-address", address, 10, 60 * 60 * 1000),
+    checkRateLimit(`register:email:${normalizedEmail}`, 3, 60 * 60 * 1000),
   ]);
   if (!addressRate.allowed || !emailRate.allowed) {
     const retryAfterSeconds = Math.max(addressRate.retryAfterSeconds, emailRate.retryAfterSeconds);

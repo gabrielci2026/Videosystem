@@ -29,7 +29,7 @@ if (!fs.existsSync(envPath)) {
 const values = parseEnv(fs.readFileSync(envPath, "utf8"));
 const required = [
   "DATABASE_URL", "APP_URL", "NEXT_PUBLIC_APP_URL", "TRUST_PROXY",
-  "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_NODE_IP",
+  "LIVEKIT_URL", "LIVEKIT_ADMIN_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_NODE_IP",
   "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_REQUIRE_TLS", "SMTP_USER",
   "SMTP_PASS", "SMTP_FROM", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
 ];
@@ -40,7 +40,7 @@ for (const name of required) {
   }
 }
 
-const placeholder = /CHANGE_ME|PUBLIC_SERVER_IP|video\.example\.com|smtp\.example\.com|noreply@example\.com|example\.com|replace[_-]?me/i;
+const placeholder = /CHANGE_ME|PUBLIC_SERVER_IP|TAILSCALE_IP|video\.example\.com|smtp\.example\.com|noreply@example\.com|example\.com|replace[_-]?me/i;
 if (!useExample) {
   for (const [name, value] of Object.entries(values)) {
     if (placeholder.test(value)) {
@@ -72,6 +72,19 @@ for (const name of ["SMTP_SECURE", "SMTP_REQUIRE_TLS"]) {
 }
 if (values.TRUST_PROXY.toLowerCase() !== "true") {
   console.error("TRUST_PROXY debe ser true cuando la app esta detras de un proxy HTTPS.");
+  process.exit(1);
+}
+if (["0.0.0.0", "::"].includes(values.PUBLISH_HOST?.trim())) {
+  console.error("PUBLISH_HOST no puede ser una interfaz publica comodin; usa 127.0.0.1 con Tailscale Serve o la IP Tailscale con Caddy.");
+  process.exit(1);
+}
+if (!useExample && !/^100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(values.LIVEKIT_NODE_IP.trim())) {
+  console.error("LIVEKIT_NODE_IP debe ser una IP IPv4 de Tailscale dentro del rango 100.64.0.0/10.");
+  process.exit(1);
+}
+const meetingAccessWindowHours = Number(values.MEETING_ACCESS_WINDOW_HOURS ?? 24);
+if (!Number.isFinite(meetingAccessWindowHours) || meetingAccessWindowHours <= 0 || meetingAccessWindowHours > 168) {
+  console.error("MEETING_ACCESS_WINDOW_HOURS debe ser un numero mayor que 0 y menor o igual a 168.");
   process.exit(1);
 }
 

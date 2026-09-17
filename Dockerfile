@@ -9,10 +9,8 @@ RUN pnpm db:generate && pnpm build
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-RUN corepack enable
-COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
-RUN pnpm install --prod --frozen-lockfile
-COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=build /app/.next ./.next
+COPY --from=build --chown=node:node /app/.next/standalone ./
+COPY --from=build --chown=node:node /app/.next/static ./.next/static
+USER node
 EXPOSE 3000
-CMD ["pnpm", "start"]
+CMD ["node", "server.js"]

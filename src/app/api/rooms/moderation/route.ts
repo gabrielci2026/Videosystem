@@ -27,6 +27,7 @@ export async function POST(request: Request) {
   }
 
   const applied = await setLiveKitParticipantMuted(roomName, userId, muted);
+  if (applied === null) return NextResponse.json({ error: "No se pudo contactar con LiveKit. Intenta nuevamente." }, { status: 503 });
   if (!applied) return NextResponse.json({ error: "El participante no tiene un micrófono activo en esta sala" }, { status: 409 });
   await prisma.auditEvent.create({ data: { actorId: moderator.id, action: muted ? "room.microphone_muted" : "room.microphone_unmuted", metadata: { roomName, userId } } });
   return NextResponse.json({ muted, userId });

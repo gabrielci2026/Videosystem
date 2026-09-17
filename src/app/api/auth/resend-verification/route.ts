@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { generateSecureToken, hashString } from "@/lib/security";
 import { getAppUrl } from "@/lib/app-url";
 import { sendEmailAfterResponse, sendWelcomeEmail } from "@/lib/email";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkAddressRateLimit, checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
 
@@ -18,8 +18,8 @@ export async function POST(request: Request) {
   const email = parsed.data.email.toLowerCase();
   const address = getClientAddress(request);
   const [addressRate, emailRate] = await Promise.all([
-    checkRateLimit("verify-resend-address:" + address, 10, 15 * 60 * 1000),
-    checkRateLimit("verify-resend:" + address + ":" + email, 3, 15 * 60 * 1000),
+    checkAddressRateLimit("verify-resend-address", address, 10, 15 * 60 * 1000),
+    checkRateLimit("verify-resend:" + email, 3, 15 * 60 * 1000),
   ]);
   if (!addressRate.allowed || !emailRate.allowed) return NextResponse.json(genericResponse);
 

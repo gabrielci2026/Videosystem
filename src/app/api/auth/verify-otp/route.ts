@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession } from "@/lib/auth";
 import { hashString } from "@/lib/security";
-import { checkRateLimit, getClientAddress } from "@/lib/rate-limit";
+import { checkAddressRateLimit, checkRateLimit, getClientAddress } from "@/lib/rate-limit";
 import { isSameOrigin } from "@/lib/request-security";
 import { readJsonBody } from "@/lib/request-body";
 
@@ -23,8 +23,8 @@ export async function POST(request: Request) {
   const { userId, code } = parsed.data;
   const address = getClientAddress(request);
   const [addressRate, userRate] = await Promise.all([
-    checkRateLimit("otp-address:" + address, 20, 10 * 60 * 1000),
-    checkRateLimit("otp:" + userId + ":" + address, 5, 10 * 60 * 1000),
+    checkAddressRateLimit("otp-address", address, 20, 10 * 60 * 1000),
+    checkRateLimit("otp:" + userId, 5, 10 * 60 * 1000),
   ]);
   if (!addressRate.allowed || !userRate.allowed) {
     const retryAfterSeconds = Math.max(addressRate.retryAfterSeconds, userRate.retryAfterSeconds);
